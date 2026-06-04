@@ -74,6 +74,19 @@ When the user reports a runtime error, pasted traceback, broken UI behavior, or 
 - Link the issue in the commit message or PR body when committing or opening a PR.
 - After the fix, update the issue or PR with what changed and what still needs live WebUI verification.
 
+Whenever an agent creates, edits, comments on, or otherwise materially touches an issue, update all relevant available issue fields for clarity:
+
+- Assignee: default to `odyss3y` unless another owner is known.
+- Labels: include area, type, priority, status, and size labels where the repository taxonomy supports them.
+- Milestone: attach the issue to the closest current milestone when one exists.
+- Relationships: link parent/child issues, related PRs, upstream issues, duplicates, and blocking dependencies explicitly in the body or comments.
+- Body/comments: include enough decision context that another human or LLM can understand the path taken, disagree with it, and choose a better path if needed.
+- Validation: state what has been tested, what still needs live Forge Neo verification, and what remains uncertain.
+- Non-goals: spell out important behavior intentionally left unchanged.
+- Priority/status: revise these when new evidence changes urgency, readiness, or implementation order.
+
+Verbose issue context is acceptable when it improves handoff quality. Prefer explicit vectors of evidence, constraints, and tradeoffs over terse issue stubs.
+
 Prefer draft PRs for larger or multi-step work so the user can see how GitHub review flow works. Keep PR descriptions practical, not promotional. Include:
 
 - Summary
