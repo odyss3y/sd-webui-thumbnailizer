@@ -253,6 +253,30 @@ def unique_suffix(base_suffix):
         index += 1
     return f"{candidate}_{index}"
 
+
+GENERATION_SCOPE_ALL_VISIBLE = "All visible checkpoints"
+GENERATION_SCOPE_ADVANCED_RANGE = "Advanced range (debug)"
+
+
+def resolve_generation_range(generation_scope, start_index, end_index):
+    if generation_scope != GENERATION_SCOPE_ADVANCED_RANGE:
+        return 0, -1
+
+    try:
+        start_index = max(0, int(start_index))
+    except (TypeError, ValueError):
+        start_index = 0
+
+    try:
+        end_index = int(end_index)
+    except (TypeError, ValueError):
+        end_index = -1
+
+    if end_index != -1 and end_index < start_index:
+        end_index = start_index
+
+    return start_index, end_index
+
 # Load settings.ini
 def load_settings():
     global gallery_height, thumbnail_columns, gallery_fit
@@ -633,16 +657,26 @@ def on_ui_tabs():
 
         ######################## SET SETTINGS SECTION ########################
         with GradioBox(elem_classes="ch_box"):
-            # Set List Dropdown
             with gr.Row():
-                set_dropdown = gr.Dropdown(choices=set_choices, label="Set List", value=initial_set_name)
-            with gr.Row():
-                preset_message = gr.Markdown()
+                with gr.Column(scale=1, min_width=110):
+                    gr.Markdown("**Set List**")
+                with gr.Column(scale=5, min_width=240):
+                    set_dropdown = gr.Dropdown(choices=set_choices, value=initial_set_name, show_label=False)
             with gr.Accordion("Generation Preset Editor", open=True):
                 gr.Markdown(
                     "Preset fields are saved as static values in `sets_user.json`. "
                     "Generation uses `Prompt Prefix + Prompt + Prompt Suffix` and "
                     "`Negative Prompt Prefix + Negative Prompt + Negative Prompt Suffix`."
+                )
+                gr.Markdown(
+                    "Advanced prompt affix fields are optional static concatenation helpers. "
+                    "They are hidden by default but still saved in `sets_user.json` and applied during generation when non-empty."
+                )
+                gr.Markdown(
+                    "Preset edits are saved to `{}`. `{}` remains the default seed file only.".format(
+                        user_sets_file_path,
+                        os.path.join(script_dir, 'sets_template.json')
+                    )
                 )
                 with gr.Row():
                     preset_display_name = gr.Textbox(
@@ -677,34 +711,43 @@ def on_ui_tabs():
                     preset_height = gr.Number(label="Height", value=get_preset_editor_values(initial_set_name)[8], precision=0)
                     preset_cfg_scale = gr.Number(label="CFG Scale", value=get_preset_editor_values(initial_set_name)[9])
                     preset_seed = gr.Number(label="Seed", value=get_preset_editor_values(initial_set_name)[10], precision=0)
+                with gr.Accordion("Advanced prompt affix fields", open=False):
+                    gr.Markdown(
+                        "These fields are static prompt wrappers, not dynamic variables. "
+                        "They stay in the preset JSON even when hidden."
+                    )
+                    with gr.Row():
+                        preset_prompt_prefix = gr.Textbox(
+                            label="Prompt Prefix",
+                            value=get_preset_editor_values(initial_set_name)[11],
+                            info="Static text prepended before Prompt at generation time. Useful for shared model triggers or quality tags.",
+                        )
+                        preset_prompt_suffix = gr.Textbox(
+                            label="Prompt Suffix",
+                            value=get_preset_editor_values(initial_set_name)[12],
+                            info="Static text appended after Prompt at generation time. Useful for reusable style, camera, or quality endings.",
+                        )
+                    with gr.Row():
+                        preset_negative_prompt_prefix = gr.Textbox(
+                            label="Negative Prompt Prefix",
+                            value=get_preset_editor_values(initial_set_name)[13],
+                            info="Static text prepended before Negative Prompt. Useful for broad default negatives.",
+                        )
+                        preset_negative_prompt_suffix = gr.Textbox(
+                            label="Negative Prompt Suffix",
+                            value=get_preset_editor_values(initial_set_name)[14],
+                            info="Static text appended after Negative Prompt. Useful for reusable cleanup or model-specific negatives.",
+                        )
                 with gr.Row():
-                    preset_prompt_prefix = gr.Textbox(
-                        label="Prompt Prefix",
-                        value=get_preset_editor_values(initial_set_name)[11],
-                        info="Static text prepended before Prompt at generation time. Useful for shared model triggers or quality tags.",
-                    )
-                    preset_prompt_suffix = gr.Textbox(
-                        label="Prompt Suffix",
-                        value=get_preset_editor_values(initial_set_name)[12],
-                        info="Static text appended after Prompt at generation time. Useful for reusable style, camera, or quality endings.",
-                    )
-                with gr.Row():
-                    preset_negative_prompt_prefix = gr.Textbox(
-                        label="Negative Prompt Prefix",
-                        value=get_preset_editor_values(initial_set_name)[13],
-                        info="Static text prepended before Negative Prompt. Useful for broad default negatives.",
-                    )
-                    preset_negative_prompt_suffix = gr.Textbox(
-                        label="Negative Prompt Suffix",
-                        value=get_preset_editor_values(initial_set_name)[14],
-                        info="Static text appended after Negative Prompt. Useful for reusable cleanup or model-specific negatives.",
-                    )
+                    determinism_warning = gr.Markdown(get_preset_editor_values(initial_set_name)[15])
                 with gr.Row():
                     save_preset_button = gr.Button("Save Preset")
                     duplicate_preset_button = gr.Button("Duplicate Preset")
                     reload_presets_button = gr.Button("Reload Presets")
                 with gr.Row():
-                    determinism_warning = gr.Markdown(get_preset_editor_values(initial_set_name)[15])
+                    generate_button = gr.Button("Generate with Selected Preset")
+                with gr.Row():
+                    preset_message = gr.Markdown()
 
             preset_editor_inputs = [
                 preset_display_name,
@@ -725,77 +768,60 @@ def on_ui_tabs():
             ]
             preset_editor_outputs = preset_editor_inputs + [determinism_warning]
 
-            # Display the persisted set file for manual audit/editing.
-            with gr.Row():
-                gr.Markdown("Preset edits are saved to `{}`. `{}` remains the default seed file only.".format(user_sets_file_path, os.path.join(script_dir, 'sets_template.json')))
-
         ######################## GENERATE SECTION ########################
         with GradioBox(elem_classes="ch_box"):
-            # Settings inputs
             with gr.Row():
-                start_index_input = gr.Number(label="Start Index", value=0)
-                last_index_input = gr.Number(label="Last Index (-1 = last index)", value=-1)
+                generation_scope = gr.Radio(
+                    choices=[GENERATION_SCOPE_ALL_VISIBLE, GENERATION_SCOPE_ADVANCED_RANGE],
+                    value=GENERATION_SCOPE_ALL_VISIBLE,
+                    label="Generation Scope",
+                    info="Default generation uses the full visible checkpoint list. Open the advanced range only for debugging or library slicing.",
+                )
                 overwrite_checkbox = gr.Checkbox(label="Overwrite Existing Thumbnails", value=False)
                 use_override_settings_checkbox = gr.Checkbox(label="Use Override Settings (edit override_settings_user.txt)", value=False)
-
-            # Generate button
+            with gr.Accordion("Advanced generation range", open=False):
+                gr.Markdown(
+                    "Advanced: generate only checkpoints from position N through M in the currently filtered list."
+                )
+                with gr.Row():
+                    start_index_input = gr.Number(label="Start Index", value=0)
+                    last_index_input = gr.Number(label="Last Index (-1 = last index)", value=-1)
             with gr.Row():
-                generate_button = gr.Button("Generate with Selected Preset")
                 generate_all_button = gr.Button("Generate Thumbnails for All Sets")
             with gr.Row():
                 generating_message = gr.Markdown()
 
-            # Display the generation text below button
-            generation_state = gr.State()
+            def display_generating_message(set_name, overwrite, generation_scope, start_index, end_index, use_override_settings):
+                start_index, end_index = resolve_generation_range(generation_scope, start_index, end_index)
 
-            # Add an invisible button for triggering thumbnail generation
-            generate_thumbnails_button = gr.Button(visible=False)
-
-            def display_generating_message(set_name, overwrite, start_index, end_index, use_override_settings):
-                start_index = int(start_index)
-                end_index = int(end_index)
-                
                 # Get the current set data
                 current_set_data = get_set_data(set_name)
                 current_suffix = f".{current_set_data['suffix']}" if current_set_data['suffix'] else ''
-                
+
                 thread = threading.Thread(target=generate_thumbnails, args=(set_name, current_set_data, current_suffix, overwrite, start_index, end_index, use_override_settings))
                 thread.start()
-                return f"Generating thumbnails for set: {set_name}. See console for progress. Once generated, restart A1111 or switch set back and forth to reload.", True
+                scope_text = "advanced range" if generation_scope == GENERATION_SCOPE_ADVANCED_RANGE else "visible checkpoints"
+                return f"Generating thumbnails for set: {set_name} using {scope_text}. See console for progress. Once generated, restart A1111 or switch set back and forth to reload."
 
-
-            def display_generating_all_message(overwrite, start_index, end_index, use_override_settings):
-                start_index = int(start_index)
-                end_index = int(end_index)
+            def display_generating_all_message(overwrite, generation_scope, start_index, end_index, use_override_settings):
+                start_index, end_index = resolve_generation_range(generation_scope, start_index, end_index)
 
                 thread = threading.Thread(target=generate_thumbnails_for_all_sets, args=(start_index, end_index, overwrite, use_override_settings))
                 thread.start()
-                return f"Generating thumbnails for all sets. See console for progress. Once generated, restart A1111 or switch set back and forth to reload.", True
+                scope_text = "advanced range" if generation_scope == GENERATION_SCOPE_ADVANCED_RANGE else "visible checkpoints"
+                return f"Generating thumbnails for all sets using {scope_text}. See console for progress. Once generated, restart A1111 or switch set back and forth to reload."
 
-            # Initiate actual generation
-            def initiate_thumbnail_generation(state, overwrite, start_index, end_index, use_override_settings):
-                if state:
-                    generate_thumbnails(current_suffix, overwrite, start_index, end_index, use_override_settings)
-                return state
-            
             # Generate button action
             generate_button.click(
                 fn=display_generating_message,
-                inputs=[set_dropdown, overwrite_checkbox, start_index_input, last_index_input, use_override_settings_checkbox],
-                outputs=[generating_message, generation_state]
+                inputs=[set_dropdown, overwrite_checkbox, generation_scope, start_index_input, last_index_input, use_override_settings_checkbox],
+                outputs=[generating_message]
             )
 
             generate_all_button.click(
                 fn=display_generating_all_message,
-                inputs=[overwrite_checkbox, start_index_input, last_index_input, use_override_settings_checkbox],
-                outputs=[generating_message, generation_state]
-            )
-           
-            # Invisible button click event
-            generate_thumbnails_button.click(
-                initiate_thumbnail_generation,
-                inputs=[generation_state, overwrite_checkbox, start_index_input, last_index_input, use_override_settings_checkbox],
-                outputs=[]
+                inputs=[overwrite_checkbox, generation_scope, start_index_input, last_index_input, use_override_settings_checkbox],
+                outputs=[generating_message]
             )
 
         ######################## GALLERY SECTION ########################

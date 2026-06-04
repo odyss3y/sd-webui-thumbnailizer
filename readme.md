@@ -21,7 +21,7 @@ Switch between different sets of thumbnails for your checkpoints. Compare how al
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/20cf66b0-b2d1-4d8f-805c-268b25cc6df2)
 
 ## Customizable Sets
-Edit thumbnail generation presets directly in the Thumbnailizer tab, including prompt, negative prompt, sampler, scheduler when available, steps, size, CFG, seed, and prompt prefix/suffix fields.
+Edit thumbnail generation presets directly in the Thumbnailizer tab, including prompt, negative prompt, sampler, scheduler when available, steps, size, CFG, seed, and advanced prompt affix fields.
 
 Preset edits are saved to `scripts/sets_user.json`. The bundled `scripts/sets_template.json` is only used as the first-run seed file and is not rewritten by the editor.
 
@@ -33,7 +33,7 @@ You can still edit `scripts/sets_user.json` manually if you need to audit or rep
 
 `Thumbnail Filename Suffix` is the thumbnail variant key. Thumbnailizer writes files beside each checkpoint, so an empty suffix targets the default thumbnail name such as `model.png`, while `environment` targets `model.environment.png`. Use a short unique suffix for every non-default preset. It does not have to match the display name, though matching it as a lowercase slug can make the files easier to audit.
 
-`Prompt Prefix`, `Prompt`, and `Prompt Suffix` are saved as separate static fields but are combined at generation time as `Prompt Prefix + Prompt + Prompt Suffix`. The negative prompt fields work the same way. Prefix/suffix fields are useful when you want to reuse a broad wrapper, such as model trigger words, quality tags, camera/style endings, or default negative terms, without burying that wrapper inside every main prompt.
+`Prompt Prefix`, `Prompt`, and `Prompt Suffix` are saved as separate static fields but are combined at generation time as `Prompt Prefix + Prompt + Prompt Suffix`. The negative prompt fields work the same way. Prefix/suffix fields are useful when you want to reuse a broad wrapper, such as model trigger words, quality tags, camera/style endings, or default negative terms, without burying that wrapper inside every main prompt. They live behind the advanced prompt affix expander in the UI by default.
 
 These fields are not dynamic variables yet. Explicit wildcard expansion and richer prompt composition are tracked separately for future sd-dynamic-prompts support.
 
@@ -45,7 +45,7 @@ Batch generate thumbnails for each of your models based on the set file. Generat
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/40930bd2-6232-4e4e-803e-0b1f268731df)
 
-_Set the [Last Index] to -1 to generate all missing thumbnails for a set, or check the "Overwrite" setting to re-generate all._
+_Use the Generation Scope control for the common case, and open the advanced range only if you need to slice the filtered checkpoint list by index. Check the "Overwrite" setting to re-generate existing thumbnails._
 
 ## Generate for All Sets
 ![image](https://github.com/user-attachments/assets/79e3b0dc-245b-47a7-81cb-ef941f488be2)
@@ -90,7 +90,7 @@ You can manually install the extension by downloading this space and placing it 
 # Known Issues
 >IndexError: list index out of range
 
-The script failed to count the number of images correctly. Make sure that your Start Index and Stop Index matches the available checkpoints.
+The script failed to count the number of images correctly. Make sure any advanced generation range matches the available checkpoints in the filtered list.
 
 >AttributeError: 'NoneType' object has no attribute 'get'
 
