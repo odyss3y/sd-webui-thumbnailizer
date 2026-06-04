@@ -6,6 +6,12 @@ Easily switch between different sets of thumbnails to see how your checkpoints h
 
 It's like an X/Y/Z-grid for checkpoints that you can easily update and always re-visit.
 
+# Fork Development Target
+
+This fork is developed and tested primarily against [Haoming02/sd-webui-forge-classic `neo`](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo), the Forge Neo branch used in the local install.
+
+Compatibility with upstream Automatic1111 and older Forge builds should be preserved where practical, but new testing and compatibility fixes are expected to prioritize Forge Neo behavior first.
+
 https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/dd04d7b6-6506-4847-8405-b71925e2e6d9
 
 # Features
