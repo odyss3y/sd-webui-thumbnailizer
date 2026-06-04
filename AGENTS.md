@@ -52,6 +52,7 @@ Do not assume a GitHub issue is fixed unless the local code and current behavior
 ## Development Rules
 
 - Prefer small, focused diffs.
+- When the user proposes a feature or implementation path, briefly surface obvious smarter designs, safer sequencing, or important risks before executing. Proceed with the requested work unless the concern is a real blocker or the user redirects.
 - Preserve user-created files such as `sets_user.json`, `blocklist_user.json`, `blocked_paths_user.txt`, and `override_settings_user.txt`.
 - Do not delete checkpoint files, model folders, generated thumbnails, preview images, caches, or local logs unless explicitly requested.
 - Do not silently change thumbnail naming semantics, set suffix semantics, overwrite behavior, blocklist behavior, or blocked-path behavior.
