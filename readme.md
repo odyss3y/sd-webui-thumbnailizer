@@ -27,6 +27,16 @@ Preset edits are saved to `scripts/sets_user.json`. The bundled `scripts/sets_te
 
 You can still edit `scripts/sets_user.json` manually if you need to audit or repair the persisted preset data.
 
+### Preset field meanings
+
+`Display Name` is the human-readable name shown in the Set List. It does not control the output filename.
+
+`Thumbnail Filename Suffix` is the thumbnail variant key. Thumbnailizer writes files beside each checkpoint, so an empty suffix targets the default thumbnail name such as `model.png`, while `environment` targets `model.environment.png`. Use a short unique suffix for every non-default preset. It does not have to match the display name, though matching it as a lowercase slug can make the files easier to audit.
+
+`Prompt Prefix`, `Prompt`, and `Prompt Suffix` are saved as separate static fields but are combined at generation time as `Prompt Prefix + Prompt + Prompt Suffix`. The negative prompt fields work the same way. Prefix/suffix fields are useful when you want to reuse a broad wrapper, such as model trigger words, quality tags, camera/style endings, or default negative terms, without burying that wrapper inside every main prompt.
+
+These fields are not dynamic variables yet. Explicit wildcard expansion and richer prompt composition are tracked separately for future sd-dynamic-prompts support.
+
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/58d3c44c-bef0-425a-80fb-860774070559)
 
 

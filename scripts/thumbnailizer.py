@@ -639,15 +639,38 @@ def on_ui_tabs():
             with gr.Row():
                 preset_message = gr.Markdown()
             with gr.Accordion("Generation Preset Editor", open=True):
+                gr.Markdown(
+                    "Preset fields are saved as static values in `sets_user.json`. "
+                    "Generation uses `Prompt Prefix + Prompt + Prompt Suffix` and "
+                    "`Negative Prompt Prefix + Negative Prompt + Negative Prompt Suffix`."
+                )
                 with gr.Row():
-                    preset_display_name = gr.Textbox(label="Display Name", value=get_preset_editor_values(initial_set_name)[0])
-                    preset_suffix = gr.Textbox(label="Thumbnail Filename Suffix", value=get_preset_editor_values(initial_set_name)[1])
+                    preset_display_name = gr.Textbox(
+                        label="Display Name",
+                        value=get_preset_editor_values(initial_set_name)[0],
+                        info="Human-readable preset name shown in the Set List. This does not control output filenames.",
+                    )
+                    preset_suffix = gr.Textbox(
+                        label="Thumbnail Filename Suffix",
+                        value=get_preset_editor_values(initial_set_name)[1],
+                        info="File variant key appended to each checkpoint thumbnail, e.g. model.environment.png. Leave empty only for the default model.png thumbnail.",
+                    )
                 with gr.Row():
-                    preset_prompt = gr.Textbox(label="Prompt", lines=4, value=get_preset_editor_values(initial_set_name)[2])
-                    preset_negative_prompt = gr.Textbox(label="Negative Prompt", lines=4, value=get_preset_editor_values(initial_set_name)[3])
+                    preset_prompt = gr.Textbox(
+                        label="Prompt",
+                        lines=4,
+                        value=get_preset_editor_values(initial_set_name)[2],
+                        info="Main positive prompt for this thumbnail set.",
+                    )
+                    preset_negative_prompt = gr.Textbox(
+                        label="Negative Prompt",
+                        lines=4,
+                        value=get_preset_editor_values(initial_set_name)[3],
+                        info="Main negative prompt for this thumbnail set.",
+                    )
                 with gr.Row():
                     preset_sampler = gr.Dropdown(choices=get_sampler_choices(), label="Sampler", value=get_preset_editor_values(initial_set_name)[4], allow_custom_value=True)
-                    preset_scheduler = gr.Dropdown(choices=get_scheduler_choices(), label="Scheduler", value=get_preset_editor_values(initial_set_name)[5], allow_custom_value=True)
+                    preset_scheduler = gr.Dropdown(choices=get_scheduler_choices(), label="Scheduler", value=get_preset_editor_values(initial_set_name)[5], allow_custom_value=True, info="Forge Neo scheduler to pass to generation when available. Automatic lets the backend choose.")
                 with gr.Row():
                     preset_steps = gr.Number(label="Steps", value=get_preset_editor_values(initial_set_name)[6], precision=0)
                     preset_width = gr.Number(label="Width", value=get_preset_editor_values(initial_set_name)[7], precision=0)
@@ -655,11 +678,27 @@ def on_ui_tabs():
                     preset_cfg_scale = gr.Number(label="CFG Scale", value=get_preset_editor_values(initial_set_name)[9])
                     preset_seed = gr.Number(label="Seed", value=get_preset_editor_values(initial_set_name)[10], precision=0)
                 with gr.Row():
-                    preset_prompt_prefix = gr.Textbox(label="Prompt Prefix", value=get_preset_editor_values(initial_set_name)[11])
-                    preset_prompt_suffix = gr.Textbox(label="Prompt Suffix", value=get_preset_editor_values(initial_set_name)[12])
+                    preset_prompt_prefix = gr.Textbox(
+                        label="Prompt Prefix",
+                        value=get_preset_editor_values(initial_set_name)[11],
+                        info="Static text prepended before Prompt at generation time. Useful for shared model triggers or quality tags.",
+                    )
+                    preset_prompt_suffix = gr.Textbox(
+                        label="Prompt Suffix",
+                        value=get_preset_editor_values(initial_set_name)[12],
+                        info="Static text appended after Prompt at generation time. Useful for reusable style, camera, or quality endings.",
+                    )
                 with gr.Row():
-                    preset_negative_prompt_prefix = gr.Textbox(label="Negative Prompt Prefix", value=get_preset_editor_values(initial_set_name)[13])
-                    preset_negative_prompt_suffix = gr.Textbox(label="Negative Prompt Suffix", value=get_preset_editor_values(initial_set_name)[14])
+                    preset_negative_prompt_prefix = gr.Textbox(
+                        label="Negative Prompt Prefix",
+                        value=get_preset_editor_values(initial_set_name)[13],
+                        info="Static text prepended before Negative Prompt. Useful for broad default negatives.",
+                    )
+                    preset_negative_prompt_suffix = gr.Textbox(
+                        label="Negative Prompt Suffix",
+                        value=get_preset_editor_values(initial_set_name)[14],
+                        info="Static text appended after Negative Prompt. Useful for reusable cleanup or model-specific negatives.",
+                    )
                 with gr.Row():
                     save_preset_button = gr.Button("Save Preset")
                     duplicate_preset_button = gr.Button("Duplicate Preset")
