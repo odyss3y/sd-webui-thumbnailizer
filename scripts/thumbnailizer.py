@@ -19,6 +19,8 @@ if script_dir not in sys.path:
 import gradio as gr
 from PIL import Image
 
+GradioBox = getattr(gr, "Box", gr.Group)
+
 # Automatic1111 specific imports
 from modules import script_callbacks, shared, sd_models, processing, images
 
@@ -26,8 +28,20 @@ from modules import script_callbacks, shared, sd_models, processing, images
 from override_settings import load_override_settings, apply_override_settings, create_override_settings_template
 
 
+def get_checkpoint_directory():
+    ckpt_dir = getattr(shared.cmd_opts, "ckpt_dir", None)
+    if ckpt_dir:
+        return ckpt_dir
+
+    ckpt_dirs = getattr(shared.cmd_opts, "ckpt_dirs", None)
+    if ckpt_dirs:
+        return ckpt_dirs[0]
+
+    return sd_models.model_path
+
+
 # Pre-initialization
-ckpt_dir = shared.cmd_opts.ckpt_dir or sd_models.model_path #string
+ckpt_dir = get_checkpoint_directory() #string
 script_dir = os.path.dirname(__file__) #string
 user_sets_file_path = os.path.join(script_dir, 'sets_user.json') #string
 user_blocklist_file_path = os.path.join(script_dir, 'blocklist_user.json') #string
@@ -455,7 +469,7 @@ def on_ui_tabs():
         gr.Markdown(f"<link rel='stylesheet' type='text/css' href='{script_dir}/style.css'>")
 
         ######################## SET SETTINGS SECTION ########################
-        with gr.Box(elem_classes="ch_box"):
+        with GradioBox(elem_classes="ch_box"):
             # Set List Dropdown
             with gr.Row():
                 set_dropdown = gr.Dropdown(choices=set_choices, label="Set List", value="Default")
@@ -464,7 +478,7 @@ def on_ui_tabs():
                 gr.Markdown("To edit the sets, open this JSON with a text editor: `{}`".format(user_sets_file_path))
 
         ######################## GENERATE SECTION ########################
-        with gr.Box(elem_classes="ch_box"):
+        with GradioBox(elem_classes="ch_box"):
             # Settings inputs
             with gr.Row():
                 start_index_input = gr.Number(label="Start Index", value=0)
@@ -533,17 +547,16 @@ def on_ui_tabs():
             )
 
         ######################## GALLERY SECTION ########################
-        with gr.Box(elem_classes="ch_box"):
+        with GradioBox(elem_classes="ch_box"):
             # Gallery    
             with gr.Row():
                 gallery = gr.Gallery(value=get_relevant_thumbnails(current_suffix), columns=thumbnail_columns, height=gallery_height, object_fit=gallery_fit)
 
         ######################## BLOCKLIST SECTION ########################
-        with gr.Box(elem_classes="ch_box"):
+        with GradioBox(elem_classes="ch_box"):
             # Load the current blocklist
 
-            # Modify the choices to include parent folder and model name
-            model_choices = [os.path.relpath(p, ckpt_dir) for p in relevant_model_paths]
+            # Keep stored model paths as-is; relpath() fails across Windows drives.
             model_choices = [p for p in all_model_paths]
 
             # Blocklist Dropdown
@@ -582,7 +595,7 @@ def on_ui_tabs():
             )
                     
         ######################## BLOCKED PATHS SECTION ########################
-        with gr.Box(elem_classes="ch_box"):
+        with GradioBox(elem_classes="ch_box"):
             gr.Markdown("## Blocked Paths")
             gr.Markdown(f"To edit the available blocked paths, open this file with a text editor: `{os.path.join(script_dir, 'blocked_paths_user.txt')}`")
             blocked_paths_checkboxes = gr.CheckboxGroup(
