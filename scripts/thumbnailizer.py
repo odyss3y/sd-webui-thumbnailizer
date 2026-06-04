@@ -22,7 +22,12 @@ from PIL import Image
 GradioBox = getattr(gr, "Box", gr.Group)
 
 # Automatic1111 specific imports
-from modules import script_callbacks, shared, sd_models, processing, images
+from modules import script_callbacks, shared, sd_models, processing, images, sd_samplers
+
+try:
+    from modules import sd_schedulers
+except ImportError:
+    sd_schedulers = None
 
 # Thumbnailizer script imports
 from override_settings import load_override_settings, apply_override_settings, create_override_settings_template
@@ -81,11 +86,172 @@ gallery_height = 1000 #int
 thumbnail_columns = 6 #int
 gallery_fit = "contain" #str
 
+STOCHASTIC_SAMPLER_MARKERS = (" a", "ancestral", "sde")
+STOCHASTIC_SCHEDULER_MARKERS = ("sde", "brownian", "turbo")
+
 # Load json data
 def load_json_data():
     global data
     with open(sets_file_path, 'r') as file:
         data = json.load(file)
+
+
+def save_json_data():
+    with open(sets_file_path, 'w') as file:
+        json.dump(data, file, indent=4)
+
+
+def get_set_choices():
+    return [item["displayName"] for item in data["sets"]]
+
+
+def get_sampler_choices():
+    try:
+        choices = sd_samplers.visible_sampler_names()
+        return choices or [x.name for x in sd_samplers.all_samplers]
+    except Exception:
+        return ["Euler a"]
+
+
+def get_scheduler_choices():
+    try:
+        return [x.label for x in sd_schedulers.schedulers]
+    except Exception:
+        return ["Automatic"]
+
+
+def normalize_prompt_text(*parts):
+    return " ".join(str(part).strip() for part in parts if str(part).strip())
+
+
+def apply_prompt_affixes(generation_set_data):
+    prompt_prefix = generation_set_data.get("promptPrefix", "")
+    prompt_suffix = generation_set_data.get("promptSuffix", "")
+    negative_prefix = generation_set_data.get("negativePromptPrefix", "")
+    negative_suffix = generation_set_data.get("negativePromptSuffix", "")
+
+    generation_set_data["prompt"] = normalize_prompt_text(prompt_prefix, generation_set_data.get("prompt", ""), prompt_suffix)
+    generation_set_data["negativePrompt"] = normalize_prompt_text(negative_prefix, generation_set_data.get("negativePrompt", ""), negative_suffix)
+    return generation_set_data
+
+
+def build_generation_set_data(base_set_data, use_override_settings=False):
+    generation_set_data = apply_prompt_affixes(base_set_data.copy())
+
+    if use_override_settings:
+        override_settings = load_override_settings(override_settings_file)
+        generation_set_data = apply_override_settings(generation_set_data, override_settings)
+
+    return generation_set_data
+
+
+def has_wildcard_syntax(prompt, negative_prompt):
+    text = f"{prompt or ''}\n{negative_prompt or ''}"
+    return "__" in text or ("{" in text and "}" in text and "|" in text)
+
+
+def get_determinism_warnings(prompt, negative_prompt, sampler, scheduler, seed):
+    warnings = []
+    try:
+        if int(seed) == -1:
+            warnings.append("Seed is -1, so each run can vary.")
+    except (TypeError, ValueError):
+        warnings.append("Seed is not a valid integer.")
+
+    sampler_text = str(sampler or "").lower()
+    scheduler_text = str(scheduler or "").lower()
+    if any(marker in sampler_text for marker in STOCHASTIC_SAMPLER_MARKERS):
+        warnings.append("Sampler may be stochastic/noise-adding.")
+    if any(marker in scheduler_text for marker in STOCHASTIC_SCHEDULER_MARKERS):
+        warnings.append("Scheduler may affect repeatability.")
+    if has_wildcard_syntax(prompt, negative_prompt):
+        warnings.append("Wildcard syntax detected; resolved prompts may vary until explicit dynamic-prompts support lands.")
+
+    if not warnings:
+        return "Determinism check: no obvious stochastic settings detected."
+
+    return "Determinism warnings:\n- " + "\n- ".join(warnings)
+
+
+def get_preset_editor_values(set_name):
+    set_item = get_set_data(set_name) or {}
+    return [
+        set_item.get("displayName", set_name or ""),
+        set_item.get("suffix", ""),
+        set_item.get("prompt", ""),
+        set_item.get("negativePrompt", ""),
+        set_item.get("sampler", get_sampler_choices()[0]),
+        set_item.get("scheduler", "Automatic"),
+        int(set_item.get("steps", 25)),
+        int(set_item.get("width", 420)),
+        int(set_item.get("height", 640)),
+        float(set_item.get("cfgScale", 6.0)),
+        int(set_item.get("seed", -1)),
+        set_item.get("promptPrefix", ""),
+        set_item.get("promptSuffix", ""),
+        set_item.get("negativePromptPrefix", ""),
+        set_item.get("negativePromptSuffix", ""),
+        get_determinism_warnings(
+            normalize_prompt_text(set_item.get("promptPrefix", ""), set_item.get("prompt", ""), set_item.get("promptSuffix", "")),
+            normalize_prompt_text(set_item.get("negativePromptPrefix", ""), set_item.get("negativePrompt", ""), set_item.get("negativePromptSuffix", "")),
+            set_item.get("sampler", ""),
+            set_item.get("scheduler", "Automatic"),
+            set_item.get("seed", -1),
+        ),
+    ]
+
+
+def preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
+    return {
+        "displayName": str(display_name).strip() or "Unnamed",
+        "suffix": str(suffix).strip(),
+        "prompt": str(prompt or ""),
+        "negativePrompt": str(negative_prompt or ""),
+        "sampler": str(sampler or "Euler a"),
+        "scheduler": str(scheduler or "Automatic"),
+        "steps": int(steps),
+        "width": int(width),
+        "height": int(height),
+        "cfgScale": float(cfg_scale),
+        "seed": int(seed),
+        "promptPrefix": str(prompt_prefix or ""),
+        "promptSuffix": str(prompt_suffix or ""),
+        "negativePromptPrefix": str(negative_prompt_prefix or ""),
+        "negativePromptSuffix": str(negative_prompt_suffix or ""),
+    }
+
+
+def preset_editor_warnings(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
+    return get_determinism_warnings(
+        normalize_prompt_text(prompt_prefix, prompt, prompt_suffix),
+        normalize_prompt_text(negative_prompt_prefix, negative_prompt, negative_prompt_suffix),
+        sampler,
+        scheduler,
+        seed,
+    )
+
+
+def unique_name(base_name):
+    existing = set(get_set_choices())
+    if base_name not in existing:
+        return base_name
+
+    index = 2
+    while f"{base_name} {index}" in existing:
+        index += 1
+    return f"{base_name} {index}"
+
+
+def unique_suffix(base_suffix):
+    existing = {item.get("suffix", "") for item in data["sets"]}
+    candidate = base_suffix or "copy"
+    if candidate not in existing:
+        return candidate
+
+    index = 2
+    while f"{candidate}_{index}" in existing:
+        index += 1
+    return f"{candidate}_{index}"
 
 # Load settings.ini
 def load_settings():
@@ -234,15 +400,14 @@ def generate_thumbnails(set_name, set_data, suffix, overwrite=False, start_index
     print(f"Filtering models using blocklist_user.json")
     print(f"Current suffix: {suffix}")
     
-    generation_set_data = set_data.copy()
-    
+    generation_set_data = build_generation_set_data(set_data, use_override_settings)
+
     if use_override_settings:
         override_settings = load_override_settings(override_settings_file)
         print("Using settings override:")
         for key, value in override_settings.items():
             if value:  # Only print non-empty overrides
                 print(f"  {key}: {value}")
-        generation_set_data = apply_override_settings(generation_set_data, override_settings)
     else:
         print("Not using settings override")
 
@@ -286,13 +451,12 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
     try:
         if use_override_settings:
             print(f"Thumbnailizer: Using override settings for model: {model_name}")
-            override_settings = load_override_settings(override_settings_file)
-            generation_set_data = apply_override_settings(generation_set_data.copy(), override_settings)
-            print(f"Thumbnailizer: Generation metadata for {model_name}:")
-            for key, value in generation_set_data.items():
-                print(f"  {key}: {value}")
         else:
             print(f"Thumbnailizer: Not using override settings for model: {model_name}")
+
+        print(f"Thumbnailizer: Generation metadata for {model_name}:")
+        for key, value in generation_set_data.items():
+            print(f"  {key}: {value}")
 
         # Set up processing parameters
         p = processing.StableDiffusionProcessingTxt2Img(
@@ -307,6 +471,9 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
             seed=int(generation_set_data.get("seed", -1)),
             override_settings={"sd_model_checkpoint": model_path}
         )
+        scheduler_name = generation_set_data.get("scheduler", None)
+        if scheduler_name:
+            p.scheduler = scheduler_name
 
         # Find the full path of the model
         model_name_without_ext = model_name.rsplit('.', 1)[0]
@@ -409,11 +576,7 @@ def generate_thumbnails_for_all_sets(start_index=0, end_index=-1, overwrite=Fals
     return "Finished generating thumbnails for all sets."
 
 def generate_thumbnail_for_model_and_set(model_name, model_path, set_item, suffix, overwrite, use_override_settings):
-    generation_set_data = set_item.copy()
-    
-    if use_override_settings:
-        override_settings = load_override_settings(override_settings_file)
-        generation_set_data = apply_override_settings(generation_set_data, override_settings)
+    generation_set_data = build_generation_set_data(set_item, use_override_settings)
     
     # Use the full model name without extension for the thumbnail
     model_name_without_ext = model_name.rsplit('.', 1)[0]
@@ -453,9 +616,9 @@ def on_ui_tabs():
     current_suffix = ''    # Initialize with empty string
 
     # Load choices from JSON
-    with open(sets_file_path, 'r') as file:
-        data = json.load(file)
-    set_choices = [item["displayName"] for item in data["sets"]]
+    load_json_data()
+    set_choices = get_set_choices()
+    initial_set_name = current_set_name if current_set_name in set_choices else set_choices[0]
     
     # Function to save model blocklist to a file
     def save_model_blocklist(selected_models):
@@ -472,10 +635,60 @@ def on_ui_tabs():
         with GradioBox(elem_classes="ch_box"):
             # Set List Dropdown
             with gr.Row():
-                set_dropdown = gr.Dropdown(choices=set_choices, label="Set List", value="Default")
-            # Display the path to edit the sets
+                set_dropdown = gr.Dropdown(choices=set_choices, label="Set List", value=initial_set_name)
             with gr.Row():
-                gr.Markdown("To edit the sets, open this JSON with a text editor: `{}`".format(user_sets_file_path))
+                preset_message = gr.Markdown()
+            with gr.Accordion("Generation Preset Editor", open=True):
+                with gr.Row():
+                    preset_display_name = gr.Textbox(label="Display Name", value=get_preset_editor_values(initial_set_name)[0])
+                    preset_suffix = gr.Textbox(label="Thumbnail Filename Suffix", value=get_preset_editor_values(initial_set_name)[1])
+                with gr.Row():
+                    preset_prompt = gr.Textbox(label="Prompt", lines=4, value=get_preset_editor_values(initial_set_name)[2])
+                    preset_negative_prompt = gr.Textbox(label="Negative Prompt", lines=4, value=get_preset_editor_values(initial_set_name)[3])
+                with gr.Row():
+                    preset_sampler = gr.Dropdown(choices=get_sampler_choices(), label="Sampler", value=get_preset_editor_values(initial_set_name)[4], allow_custom_value=True)
+                    preset_scheduler = gr.Dropdown(choices=get_scheduler_choices(), label="Scheduler", value=get_preset_editor_values(initial_set_name)[5], allow_custom_value=True)
+                with gr.Row():
+                    preset_steps = gr.Number(label="Steps", value=get_preset_editor_values(initial_set_name)[6], precision=0)
+                    preset_width = gr.Number(label="Width", value=get_preset_editor_values(initial_set_name)[7], precision=0)
+                    preset_height = gr.Number(label="Height", value=get_preset_editor_values(initial_set_name)[8], precision=0)
+                    preset_cfg_scale = gr.Number(label="CFG Scale", value=get_preset_editor_values(initial_set_name)[9])
+                    preset_seed = gr.Number(label="Seed", value=get_preset_editor_values(initial_set_name)[10], precision=0)
+                with gr.Row():
+                    preset_prompt_prefix = gr.Textbox(label="Prompt Prefix", value=get_preset_editor_values(initial_set_name)[11])
+                    preset_prompt_suffix = gr.Textbox(label="Prompt Suffix", value=get_preset_editor_values(initial_set_name)[12])
+                with gr.Row():
+                    preset_negative_prompt_prefix = gr.Textbox(label="Negative Prompt Prefix", value=get_preset_editor_values(initial_set_name)[13])
+                    preset_negative_prompt_suffix = gr.Textbox(label="Negative Prompt Suffix", value=get_preset_editor_values(initial_set_name)[14])
+                with gr.Row():
+                    save_preset_button = gr.Button("Save Preset")
+                    duplicate_preset_button = gr.Button("Duplicate Preset")
+                    reload_presets_button = gr.Button("Reload Presets")
+                with gr.Row():
+                    determinism_warning = gr.Markdown(get_preset_editor_values(initial_set_name)[15])
+
+            preset_editor_inputs = [
+                preset_display_name,
+                preset_suffix,
+                preset_prompt,
+                preset_negative_prompt,
+                preset_sampler,
+                preset_scheduler,
+                preset_steps,
+                preset_width,
+                preset_height,
+                preset_cfg_scale,
+                preset_seed,
+                preset_prompt_prefix,
+                preset_prompt_suffix,
+                preset_negative_prompt_prefix,
+                preset_negative_prompt_suffix,
+            ]
+            preset_editor_outputs = preset_editor_inputs + [determinism_warning]
+
+            # Display the persisted set file for manual audit/editing.
+            with gr.Row():
+                gr.Markdown("Preset edits are saved to `{}`. `{}` remains the default seed file only.".format(user_sets_file_path, os.path.join(script_dir, 'sets_template.json')))
 
         ######################## GENERATE SECTION ########################
         with GradioBox(elem_classes="ch_box"):
@@ -488,7 +701,7 @@ def on_ui_tabs():
 
             # Generate button
             with gr.Row():
-                generate_button = gr.Button("Generate Thumbnails")
+                generate_button = gr.Button("Generate with Selected Preset")
                 generate_all_button = gr.Button("Generate Thumbnails for All Sets")
             with gr.Row():
                 generating_message = gr.Markdown()
@@ -632,6 +845,48 @@ def on_ui_tabs():
         )
         
         ######################## MISC ########################
+        def refresh_preset_view(selected_set_name, message):
+            choices = get_set_choices()
+            selected = selected_set_name if selected_set_name in choices else choices[0]
+            gallery_data = update_gallery(selected)
+            return [gr.update(choices=choices, value=selected), message, gallery_data] + get_preset_editor_values(selected)
+
+        def save_selected_preset(selected_set_name, display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
+            global current_set_name, set_data, current_suffix, data
+            new_preset = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
+            selected_index = next((index for index, item in enumerate(data["sets"]) if item["displayName"] == selected_set_name), None)
+
+            if selected_index is None:
+                return refresh_preset_view(selected_set_name, f"Preset not found: {selected_set_name}")
+
+            existing_names = {item["displayName"] for index, item in enumerate(data["sets"]) if index != selected_index}
+            if new_preset["displayName"] in existing_names:
+                return refresh_preset_view(selected_set_name, f"Preset name already exists: {new_preset['displayName']}")
+
+            data["sets"][selected_index] = new_preset
+            save_json_data()
+            current_set_name = new_preset["displayName"]
+            set_data = new_preset
+            current_suffix = f".{new_preset['suffix']}" if new_preset["suffix"] else ''
+            return refresh_preset_view(current_set_name, f"Saved preset to {user_sets_file_path}")
+
+        def duplicate_selected_preset(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
+            global current_set_name, set_data, current_suffix, data
+            copied_preset = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
+            copied_preset["displayName"] = unique_name(f"{copied_preset['displayName']} Copy")
+            copied_preset["suffix"] = unique_suffix(f"{copied_preset['suffix']}_copy" if copied_preset["suffix"] else "copy")
+            data["sets"].append(copied_preset)
+            save_json_data()
+            current_set_name = copied_preset["displayName"]
+            set_data = copied_preset
+            current_suffix = f".{copied_preset['suffix']}" if copied_preset["suffix"] else ''
+            return refresh_preset_view(current_set_name, f"Duplicated preset to {user_sets_file_path}")
+
+        def reload_presets(selected_set_name):
+            global data
+            load_json_data()
+            return refresh_preset_view(selected_set_name, f"Reloaded presets from {user_sets_file_path}")
+
         # Handle set changes
         def on_set_change(set_name):
             global current_set_name, set_data, current_suffix
@@ -644,13 +899,38 @@ def on_ui_tabs():
 
             # Update the gallery
             gallery_data = update_gallery(set_name)
-            return gallery_data
+            return [gallery_data] + get_preset_editor_values(set_name)
+
+        for editor_input in preset_editor_inputs:
+            editor_input.change(
+                fn=preset_editor_warnings,
+                inputs=preset_editor_inputs,
+                outputs=[determinism_warning]
+            )
+
+        save_preset_button.click(
+            fn=save_selected_preset,
+            inputs=[set_dropdown] + preset_editor_inputs,
+            outputs=[set_dropdown, preset_message, gallery] + preset_editor_outputs
+        )
+
+        duplicate_preset_button.click(
+            fn=duplicate_selected_preset,
+            inputs=preset_editor_inputs,
+            outputs=[set_dropdown, preset_message, gallery] + preset_editor_outputs
+        )
+
+        reload_presets_button.click(
+            fn=reload_presets,
+            inputs=[set_dropdown],
+            outputs=[set_dropdown, preset_message, gallery] + preset_editor_outputs
+        )
 
         # Event handling for the Set List dropdown change
         set_dropdown.change(
             fn=on_set_change,
             inputs=[set_dropdown],
-            outputs=[gallery]
+            outputs=[gallery] + preset_editor_outputs
         )
 
     return [(ui_component, "Thumbnailizer", "thumbnailizer_tab")]

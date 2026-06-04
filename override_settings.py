@@ -19,7 +19,7 @@ def load_override_settings(override_file_path):
 def apply_override_settings(generation_set_data, override_settings):
     for key, value in override_settings.items():
         if value:  # Only override if the value is not empty
-            if key in ['prompt', 'negativePrompt', 'sampler']:
+            if key in ['prompt', 'negativePrompt', 'sampler', 'scheduler']:
                 generation_set_data[key] = value
             elif key in ['steps', 'width', 'height', 'seed']:
                 generation_set_data[key] = int(value)
@@ -47,6 +47,7 @@ def create_override_settings_template(file_path):
         f.write("prompt=\n")
         f.write("negativePrompt=\n")
         f.write("sampler=\n")
+        f.write("scheduler=\n")
         f.write("steps=\n")
         f.write("width=\n")
         f.write("height=\n")

@@ -21,7 +21,11 @@ Switch between different sets of thumbnails for your checkpoints. Compare how al
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/20cf66b0-b2d1-4d8f-805c-268b25cc6df2)
 
 ## Customizable Sets
-Easily edit the set list in a .JSON-file format to customize the Set dropdown menu.
+Edit thumbnail generation presets directly in the Thumbnailizer tab, including prompt, negative prompt, sampler, scheduler when available, steps, size, CFG, seed, and prompt prefix/suffix fields.
+
+Preset edits are saved to `scripts/sets_user.json`. The bundled `scripts/sets_template.json` is only used as the first-run seed file and is not rewritten by the editor.
+
+You can still edit `scripts/sets_user.json` manually if you need to audit or repair the persisted preset data.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/58d3c44c-bef0-425a-80fb-860774070559)
 
