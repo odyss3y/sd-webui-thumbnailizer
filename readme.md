@@ -29,9 +29,9 @@ You can still edit `scripts/sets_user.json` manually if you need to audit or rep
 
 ### Preset field meanings
 
-`Display Name` is the human-readable name shown in the Set List. It does not control the output filename.
+`Display Name` is the human-readable name shown in the Set List. For normal editable presets, Thumbnailizer derives the output filename suffix from this name.
 
-`Thumbnail Filename Suffix` is the thumbnail variant key. Thumbnailizer-generated presets must use a non-empty suffix so they write sidecar files such as `model.environment.png`. The built-in `Default` empty-suffix set represents checkpoint default thumbnails such as `model.png`, but it is protected from generation to avoid overwriting primary checkpoint images.
+`Thumbnail Filename Suffix` is read-only in the UI. Thumbnailizer-generated presets derive it from `Display Name`, so a preset named `Environment` writes sidecar files such as `model.environment.png`. The built-in `Default` set represents checkpoint default thumbnails such as `model.png`, but it is protected from generation to avoid overwriting primary checkpoint images. `Preview` remains the read-only Civitai Helper `model.preview.png` view.
 
 `Prompt Prefix`, `Prompt`, and `Prompt Suffix` are saved as separate static fields but are combined at generation time as `Prompt Prefix + Prompt + Prompt Suffix`. The negative prompt fields work the same way. Prefix/suffix fields are useful when you want to reuse a broad wrapper, such as model trigger words, quality tags, camera/style endings, or default negative terms, without burying that wrapper inside every main prompt. They live behind the advanced prompt affix expander in the UI by default.
 
@@ -44,6 +44,8 @@ These fields are not dynamic variables yet. Explicit wildcard expansion and rich
 Batch generate thumbnails for explicitly selected checkpoint targets based on the selected preset. The target selector lists relative checkpoint paths so duplicate model filenames in different folders stay distinguishable.
 
 The selected preset must have a non-empty thumbnail filename suffix. `Default` and `Preview` can be selected for viewing, but Thumbnailizer does not generate them from the normal preset controls.
+
+Use `New Preset` to create a fresh editable preset. Use `Duplicate Preset` when you want to copy the currently selected settings into a new preset.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/40930bd2-6232-4e4e-803e-0b1f268731df)
 

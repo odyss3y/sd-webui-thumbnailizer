@@ -6,6 +6,7 @@ import json
 import glob
 import threading
 import configparser
+import re
 from pathlib import Path
 from contextlib import closing
 import traceback
@@ -107,6 +108,8 @@ GENERATION_PROTECTED_PRESET_NOTICE = (
     "Default is protected from generation because it targets checkpoint default `model.png` files. "
     "Create or duplicate a preset with a non-empty suffix before generating Thumbnailizer images."
 )
+IDENTITY_PROTECTED_PRESET_NAMES = {"default", "preview"}
+IDENTITY_PROTECTED_PRESET_SUFFIXES = {"", "preview"}
 
 # Load json data
 def load_json_data():
@@ -144,12 +147,23 @@ def is_generation_protected_preset_item(set_item):
     return suffix in GENERATION_PROTECTED_PRESET_SUFFIXES
 
 
+def is_identity_protected_preset_item(set_item):
+    set_item = set_item or {}
+    display_name = str(set_item.get("displayName", "")).strip().lower()
+    suffix = str(set_item.get("suffix", "")).strip().lower()
+    return display_name in IDENTITY_PROTECTED_PRESET_NAMES or suffix in IDENTITY_PROTECTED_PRESET_SUFFIXES
+
+
 def is_read_only_preset_name(set_name):
     return is_read_only_preset_item(get_set_data(set_name))
 
 
 def is_generation_protected_preset_name(set_name):
     return is_generation_protected_preset_item(get_set_data(set_name))
+
+
+def is_identity_protected_preset_name(set_name):
+    return is_identity_protected_preset_item(get_set_data(set_name))
 
 
 def has_generatable_presets():
@@ -178,6 +192,36 @@ def get_generation_target_notice(set_name):
 def is_inpainting_model_path(model_path):
     filename = Path(model_path).name.lower()
     return any(marker in filename for marker in INPAINTING_FILENAME_MARKERS)
+
+
+def suffix_from_display_name(display_name):
+    suffix = re.sub(r"[^a-z0-9]+", "-", str(display_name or "").strip().lower()).strip("-")
+    return suffix or "preset"
+
+
+def unique_derived_suffix(display_name, exclude_index=None):
+    base_suffix = suffix_from_display_name(display_name)
+    existing = {
+        str(item.get("suffix", "")).strip().lower()
+        for index, item in enumerate(data["sets"])
+        if exclude_index is None or index != exclude_index
+    }
+    if base_suffix not in existing:
+        return base_suffix
+
+    index = 2
+    while f"{base_suffix}-{index}" in existing:
+        index += 1
+    return f"{base_suffix}-{index}"
+
+
+def get_editor_suffix_value(set_item):
+    set_item = set_item or {}
+    display_name = str(set_item.get("displayName", "")).strip().lower()
+    suffix = str(set_item.get("suffix", "")).strip()
+    if display_name == "default" and suffix == "":
+        return "default"
+    return suffix
 
 
 def get_sampler_choices():
@@ -252,7 +296,7 @@ def get_preset_editor_values_from_set_item(set_item, set_name=""):
     set_item = set_item or {}
     return [
         set_item.get("displayName", set_name or ""),
-        set_item.get("suffix", ""),
+        get_editor_suffix_value(set_item),
         set_item.get("prompt", ""),
         set_item.get("negativePrompt", ""),
         set_item.get("sampler", get_sampler_choices()[0]),
@@ -286,6 +330,7 @@ def get_preset_action_updates(set_name):
     generatable = editable and not is_generation_protected_preset_name(set_name)
     return [
         gr.update(interactive=editable),
+        gr.update(interactive=True),
         gr.update(interactive=editable),
         gr.update(interactive=deletable),
         gr.update(interactive=generatable),
@@ -293,10 +338,34 @@ def get_preset_action_updates(set_name):
     ]
 
 
+def get_preset_input_interactivity(set_name):
+    read_only = is_read_only_preset_name(set_name)
+    identity_protected = is_identity_protected_preset_name(set_name)
+    return [
+        not read_only and not identity_protected,  # Display Name
+        False,  # Thumbnail Filename Suffix is derived or built-in.
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+        not read_only,
+    ]
+
+
 def get_preset_editor_updates(set_name, preset_values=None):
     values = preset_values if preset_values is not None else get_preset_editor_values(set_name)
-    interactive = not is_read_only_preset_name(set_name)
-    editor_updates = [gr.update(value=value, interactive=interactive) for value in values[:-1]]
+    editor_updates = [
+        gr.update(value=value, interactive=interactive)
+        for value, interactive in zip(values[:-1], get_preset_input_interactivity(set_name))
+    ]
     return editor_updates + [
         values[-1],
         get_read_only_preset_notice(set_name),
@@ -321,6 +390,27 @@ def preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sam
         "promptSuffix": str(prompt_suffix or ""),
         "negativePromptPrefix": str(negative_prompt_prefix or ""),
         "negativePromptSuffix": str(negative_prompt_suffix or ""),
+    }
+
+
+def new_preset_from_defaults(display_name="New Preset"):
+    display_name = unique_name(display_name)
+    return {
+        "displayName": display_name,
+        "suffix": unique_derived_suffix(display_name),
+        "prompt": "",
+        "negativePrompt": "",
+        "sampler": get_sampler_choices()[0],
+        "scheduler": "Automatic",
+        "steps": 25,
+        "width": 420,
+        "height": 640,
+        "cfgScale": 6.0,
+        "seed": -1,
+        "promptPrefix": "",
+        "promptSuffix": "",
+        "negativePromptPrefix": "",
+        "negativePromptSuffix": "",
     }
 
 
@@ -414,17 +504,21 @@ def get_suffix_for_set_name(set_name):
     return f".{suffix}" if suffix else ""
 
 
-def get_checkpoint_target_update(set_name, folder_filter=ALL_CHECKPOINT_FOLDERS, selected_paths=None):
-    visible_paths = get_visible_model_paths(folder_filter)
+def get_selected_checkpoint_targets_for_set(set_name, visible_paths, selected_paths=None):
     selected_paths = normalize_model_paths(selected_paths)
     if is_read_only_preset_name(set_name) or is_generation_protected_preset_name(set_name):
-        selected = []
-    elif selected_paths:
-        selected = [path for path in selected_paths if path in visible_paths]
-    else:
-        selected = get_missing_model_paths(get_suffix_for_set_name(set_name), visible_paths)
+        return []
+    if selected_paths:
+        return [path for path in selected_paths if path in visible_paths]
+    return get_missing_model_paths(get_suffix_for_set_name(set_name), visible_paths)
 
-    return gr.update(choices=visible_paths, value=selected)
+
+def get_checkpoint_target_update(set_name, folder_filter=ALL_CHECKPOINT_FOLDERS, selected_paths=None):
+    visible_paths = get_visible_model_paths(folder_filter)
+    return gr.update(
+        choices=visible_paths,
+        value=get_selected_checkpoint_targets_for_set(set_name, visible_paths, selected_paths),
+    )
 
 # Load settings.ini
 def load_settings():
@@ -822,6 +916,7 @@ def on_ui_tabs():
     initial_preset_read_only = is_read_only_preset_name(initial_set_name)
     initial_preset_delete_protected = is_delete_protected_preset_item(get_set_data(initial_set_name))
     initial_preset_generatable = not initial_preset_read_only and not is_generation_protected_preset_name(initial_set_name)
+    initial_preset_identity_protected = is_identity_protected_preset_name(initial_set_name)
     
     # Function to save model blocklist to a file
     def save_model_blocklist(selected_models):
@@ -863,14 +958,14 @@ def on_ui_tabs():
                     preset_display_name = gr.Textbox(
                         label="Display Name",
                         value=get_preset_editor_values(initial_set_name)[0],
-                        info="Human-readable preset name shown in the Set List. This does not control output filenames.",
-                        interactive=not initial_preset_read_only,
+                        info="Human-readable preset name shown in the Set List. For normal presets, the filename suffix is derived from this name.",
+                        interactive=not initial_preset_read_only and not initial_preset_identity_protected,
                     )
                     preset_suffix = gr.Textbox(
-                        label="Thumbnail Filename Suffix",
+                        label="Thumbnail Filename Suffix (derived)",
                         value=get_preset_editor_values(initial_set_name)[1],
-                        info="File variant key appended to each checkpoint thumbnail, e.g. model.environment.png. Leave empty only for the default model.png thumbnail.",
-                        interactive=not initial_preset_read_only,
+                        info="Read-only filename variant key. Normal presets derive this from Display Name, e.g. Tycho -> model.tycho.png. Built-ins keep reserved values.",
+                        interactive=False,
                     )
                 with gr.Row():
                     preset_prompt = gr.Textbox(
@@ -931,6 +1026,7 @@ def on_ui_tabs():
                     determinism_warning = gr.Markdown(get_preset_editor_values(initial_set_name)[15])
                 with gr.Row():
                     save_preset_button = gr.Button("Save Preset", interactive=not initial_preset_read_only)
+                    new_preset_button = gr.Button("New Preset")
                     duplicate_preset_button = gr.Button("Duplicate Preset", interactive=not initial_preset_read_only)
                     delete_preset_button = gr.Button("Delete Preset", interactive=not initial_preset_delete_protected)
                     reload_presets_button = gr.Button("Reload Presets")
@@ -944,7 +1040,7 @@ def on_ui_tabs():
                     checkpoint_targets = gr.Dropdown(
                         label="Checkpoint Targets (relative paths)",
                         choices=get_visible_model_paths(ALL_CHECKPOINT_FOLDERS),
-                        value=get_missing_model_paths(get_suffix_for_set_name(initial_set_name), get_visible_model_paths(ALL_CHECKPOINT_FOLDERS)),
+                        value=get_selected_checkpoint_targets_for_set(initial_set_name, get_visible_model_paths(ALL_CHECKPOINT_FOLDERS)),
                         multiselect=True,
                     )
                 with gr.Row():
@@ -991,6 +1087,7 @@ def on_ui_tabs():
                 read_only_preset_message,
                 generation_target_message,
                 save_preset_button,
+                new_preset_button,
                 duplicate_preset_button,
                 delete_preset_button,
                 generate_button,
@@ -1183,13 +1280,24 @@ def on_ui_tabs():
 
             if selected_index is None:
                 return refresh_preset_view(selected_set_name, f"Preset not found: {selected_set_name}", folder_filter)
-            if is_read_only_preset_item(data["sets"][selected_index]):
+            selected_preset = data["sets"][selected_index]
+            if is_read_only_preset_item(selected_preset):
                 return refresh_preset_view(selected_set_name, READ_ONLY_PRESET_NOTICE, folder_filter)
+
+            selected_identity_protected = is_identity_protected_preset_item(selected_preset)
+            if selected_identity_protected:
+                new_preset["displayName"] = selected_preset["displayName"]
+                new_preset["suffix"] = selected_preset.get("suffix", "")
+            else:
+                new_preset["suffix"] = unique_derived_suffix(new_preset["displayName"], selected_index)
+
             if is_read_only_preset_item(new_preset):
                 return refresh_preset_view(selected_set_name, "The Preview name/suffix is reserved for Civitai Helper thumbnails and cannot be used for editable presets.", folder_filter)
+            if not selected_identity_protected and is_identity_protected_preset_item(new_preset):
+                return refresh_preset_view(selected_set_name, "Default and Preview are reserved built-in preset names and cannot be used for editable presets.", folder_filter)
 
-            existing_names = {item["displayName"] for index, item in enumerate(data["sets"]) if index != selected_index}
-            if new_preset["displayName"] in existing_names:
+            existing_names = {str(item["displayName"]).strip().lower() for index, item in enumerate(data["sets"]) if index != selected_index}
+            if new_preset["displayName"].strip().lower() in existing_names:
                 return refresh_preset_view(selected_set_name, f"Preset name already exists: {new_preset['displayName']}", folder_filter)
 
             data["sets"][selected_index] = new_preset
@@ -1204,13 +1312,28 @@ def on_ui_tabs():
                 get_preset_editor_values_from_set_item(new_preset, current_set_name),
             )
 
+        def create_new_preset(folder_filter):
+            global current_set_name, set_data, current_suffix, data
+            new_preset = new_preset_from_defaults()
+            data["sets"].append(new_preset)
+            save_json_data()
+            current_set_name = new_preset["displayName"]
+            set_data = new_preset
+            current_suffix = f".{new_preset['suffix']}" if new_preset["suffix"] else ''
+            return refresh_preset_view(
+                current_set_name,
+                f"Created new preset in {user_sets_file_path}",
+                folder_filter,
+                get_preset_editor_values_from_set_item(new_preset, current_set_name),
+            )
+
         def duplicate_selected_preset(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix, folder_filter):
             global current_set_name, set_data, current_suffix, data
             copied_preset = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
             if is_read_only_preset_item(copied_preset):
                 return refresh_preset_view(current_set_name, "Read-only Preview presets cannot be duplicated.", folder_filter)
             copied_preset["displayName"] = unique_name(f"{copied_preset['displayName']} Copy")
-            copied_preset["suffix"] = unique_suffix(f"{copied_preset['suffix']}_copy" if copied_preset["suffix"] else "copy")
+            copied_preset["suffix"] = unique_derived_suffix(copied_preset["displayName"])
             data["sets"].append(copied_preset)
             save_json_data()
             current_set_name = copied_preset["displayName"]
@@ -1277,6 +1400,13 @@ def on_ui_tabs():
             target_update = get_checkpoint_target_update(set_name, folder_filter)
             return [gr.update(choices=choices, value=set_name), "", gallery_data, target_update] + get_preset_editor_updates(set_name)
 
+        def update_derived_suffix(selected_set_name, display_name):
+            selected_index = next((index for index, item in enumerate(data["sets"]) if item["displayName"] == selected_set_name), None)
+            selected_preset = data["sets"][selected_index] if selected_index is not None else None
+            if is_identity_protected_preset_item(selected_preset) or is_read_only_preset_item(selected_preset):
+                return get_editor_suffix_value(selected_preset)
+            return unique_derived_suffix(display_name, selected_index)
+
         for editor_input in preset_editor_inputs:
             editor_input.change(
                 fn=preset_editor_warnings,
@@ -1284,9 +1414,21 @@ def on_ui_tabs():
                 outputs=[determinism_warning]
             )
 
+        preset_display_name.change(
+            fn=update_derived_suffix,
+            inputs=[set_dropdown, preset_display_name],
+            outputs=[preset_suffix]
+        )
+
         save_preset_button.click(
             fn=save_selected_preset,
             inputs=[set_dropdown] + preset_editor_inputs + [folder_filter_dropdown],
+            outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
+        )
+
+        new_preset_button.click(
+            fn=create_new_preset,
+            inputs=[folder_filter_dropdown],
             outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
         )
 
