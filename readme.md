@@ -41,16 +41,16 @@ These fields are not dynamic variables yet. Explicit wildcard expansion and rich
 
 
 ## Thumbnail Set Generation
-Batch generate thumbnails for each of your models based on the set file. Generation has settings for how many images to generate, and if it's allowed to override existing thumbnails.
+Batch generate thumbnails for explicitly selected checkpoint targets based on the selected preset. The target selector lists relative checkpoint paths so duplicate model filenames in different folders stay distinguishable.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/40930bd2-6232-4e4e-803e-0b1f268731df)
 
-_Use the Generation Scope control for the common case, and open the advanced range only if you need to slice the filtered checkpoint list by index. Check the "Overwrite" setting to re-generate existing thumbnails._
+_Use Select Missing to target only checkpoints without thumbnails for the selected preset. Use Select Visible to target every checkpoint in the current folder filter. Enable "Regenerate thumbnails that already exist" only when existing files should be replaced._
 
 ## Generate for All Sets
 ![image](https://github.com/user-attachments/assets/79e3b0dc-245b-47a7-81cb-ef941f488be2)
 
-_Use this button to generate thumbnails for all the possible sets from the Sets-dropdown, instead of just the currently selected one._
+_Use this button to generate every saved preset for the currently selected checkpoint targets. Select the targets first; the batch action does not silently expand to the whole checkpoint library._
 
 ## Use Override Settings
 ![image](https://github.com/user-attachments/assets/6970f0f7-28be-41d9-8315-5028d7915fb9)
@@ -90,7 +90,7 @@ You can manually install the extension by downloading this space and placing it 
 # Known Issues
 >IndexError: list index out of range
 
-The script failed to count the number of images correctly. Make sure any advanced generation range matches the available checkpoints in the filtered list.
+The script failed to count the number of images correctly. Refresh the gallery and reselect checkpoint targets so the selected relative paths match the currently visible checkpoint list.
 
 >AttributeError: 'NoneType' object has no attribute 'get'
 

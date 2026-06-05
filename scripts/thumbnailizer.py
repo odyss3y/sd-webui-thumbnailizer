@@ -85,6 +85,7 @@ gallery = None # Instance of gr.Gallery
 gallery_height = 1000 #int
 thumbnail_columns = 6 #int
 gallery_fit = "contain" #str
+generation_stop_event = threading.Event()
 
 STOCHASTIC_SAMPLER_MARKERS = (" a", "ancestral", "sde")
 STOCHASTIC_SCHEDULER_MARKERS = ("sde", "brownian", "turbo")
@@ -254,28 +255,59 @@ def unique_suffix(base_suffix):
     return f"{candidate}_{index}"
 
 
-GENERATION_SCOPE_ALL_VISIBLE = "All visible checkpoints"
-GENERATION_SCOPE_ADVANCED_RANGE = "Advanced range (debug)"
+ALL_CHECKPOINT_FOLDERS = "All folders"
 
 
-def resolve_generation_range(generation_scope, start_index, end_index):
-    if generation_scope != GENERATION_SCOPE_ADVANCED_RANGE:
-        return 0, -1
+def normalize_model_paths(model_paths):
+    if model_paths is None:
+        return []
+    if isinstance(model_paths, str):
+        return [model_paths]
+    return [path for path in model_paths if path]
 
-    try:
-        start_index = max(0, int(start_index))
-    except (TypeError, ValueError):
-        start_index = 0
 
-    try:
-        end_index = int(end_index)
-    except (TypeError, ValueError):
-        end_index = -1
+def get_checkpoint_folder(model_path):
+    parent = Path(model_path).parent.as_posix()
+    return parent if parent != "." else "(root)"
 
-    if end_index != -1 and end_index < start_index:
-        end_index = start_index
 
-    return start_index, end_index
+def get_checkpoint_folder_choices():
+    folders = sorted({get_checkpoint_folder(path) for path in relevant_model_paths})
+    return [ALL_CHECKPOINT_FOLDERS] + folders
+
+
+def get_visible_model_paths(folder_filter=ALL_CHECKPOINT_FOLDERS):
+    if not folder_filter or folder_filter == ALL_CHECKPOINT_FOLDERS:
+        return list(relevant_model_paths)
+    return [path for path in relevant_model_paths if get_checkpoint_folder(path) == folder_filter]
+
+
+def get_thumbnail_path_for_model(model_path, suffix=""):
+    model_path_obj = Path(model_path)
+    thumb_file = f"{model_path_obj.stem}{suffix}.png"
+    return Path(ckpt_dir) / model_path_obj.parent / thumb_file
+
+
+def get_missing_model_paths(suffix="", model_paths=None):
+    target_paths = relevant_model_paths if model_paths is None else model_paths
+    return [path for path in target_paths if not get_thumbnail_path_for_model(path, suffix).exists()]
+
+
+def get_suffix_for_set_name(set_name):
+    set_item = get_set_data(set_name) or {}
+    suffix = set_item.get("suffix", "")
+    return f".{suffix}" if suffix else ""
+
+
+def get_checkpoint_target_update(set_name, folder_filter=ALL_CHECKPOINT_FOLDERS, selected_paths=None):
+    visible_paths = get_visible_model_paths(folder_filter)
+    selected_paths = normalize_model_paths(selected_paths)
+    if selected_paths:
+        selected = [path for path in selected_paths if path in visible_paths]
+    else:
+        selected = get_missing_model_paths(get_suffix_for_set_name(set_name), visible_paths)
+
+    return gr.update(choices=visible_paths, value=selected)
 
 # Load settings.ini
 def load_settings():
@@ -381,26 +413,23 @@ initialize()
 load_json_data()
 
 # Function to get model thumbnail paths
-def get_relevant_thumbnails(suffix=""):
+def get_relevant_thumbnails(suffix="", model_paths=None):
     global ckpt_dir
     thumbnails = []
     missing_thumbnail_path = Path(script_dir) / "card-no-preview.png"
+    target_model_paths = relevant_model_paths if model_paths is None else model_paths
 
-    for model_path in relevant_model_paths:
+    for model_path in target_model_paths:
         model_path_obj = Path(model_path)
-        
+
         # Correctly split the model name, preserving all but the last extension
-        model_stem = model_path_obj.stem
-        base_model_name = model_stem  # Keep the full stem of the model name
         full_model_name = model_path_obj.name
 
         # Check for thumbnail with set-specific suffix
-        thumb_file_with_suffix = f"{base_model_name}{suffix}.png"
-        thumbnail_path_with_suffix = Path(ckpt_dir) / model_path_obj.parent / thumb_file_with_suffix
-        
+        thumbnail_path_with_suffix = get_thumbnail_path_for_model(model_path, suffix)
+
         # Check for thumbnail without set-specific suffix (default)
-        thumb_file_without_suffix = f"{base_model_name}.png"
-        thumbnail_path_without_suffix = Path(ckpt_dir) / model_path_obj.parent / thumb_file_without_suffix
+        thumbnail_path_without_suffix = get_thumbnail_path_for_model(model_path, "")
 
         # Check for thumbnails in this order: with suffix, without suffix, default
         if suffix and thumbnail_path_with_suffix.exists():
@@ -416,59 +445,76 @@ def get_relevant_thumbnails(suffix=""):
 
 
 # Start thumbnail generation
-def generate_thumbnails(set_name, set_data, suffix, overwrite=False, start_index=0, end_index=-1, use_override_settings=False):
-    global gallery
-    
-    print(f"--------------------------------------------------------")
-    print(f"Thumbnailizer generation initializing for set: {set_name}")
-    print(f"Filtering models using blocklist_user.json")
-    print(f"Current suffix: {suffix}")
-    
-    generation_set_data = build_generation_set_data(set_data, use_override_settings)
+def generate_thumbnails(set_name, set_data, suffix, model_paths, regenerate_existing=False, use_override_settings=False):
+    model_paths = normalize_model_paths(model_paths)
+    if not model_paths:
+        return "No checkpoint targets selected."
 
-    if use_override_settings:
-        override_settings = load_override_settings(override_settings_file)
-        print("Using settings override:")
-        for key, value in override_settings.items():
-            if value:  # Only print non-empty overrides
-                print(f"  {key}: {value}")
-    else:
-        print("Not using settings override")
+    generation_stop_event.clear()
+    shared.state.begin(job="thumbnailizer")
+    completed = 0
+    skipped = 0
+    failed = 0
 
-    print(f"Generation set data: {generation_set_data}")
-
-    model_paths = relevant_model_paths[start_index:end_index] if end_index != -1 else relevant_model_paths[start_index:]
-    total_to_process = len(model_paths)
-
-    if total_to_process == 0:
-        print("No thumbnails to generate.")
-        return "No thumbnails to generate."
-
-    print(f"Generating {total_to_process} thumbnails for set: {set_name}")
-
-    for i, model_path in enumerate(model_paths):
-        model_name = Path(model_path).name
-        full_model_path = os.path.join(ckpt_dir, model_path)
-        try:
-            print(f"Generating '{set_name}' thumbnail for model: {model_name}")
-            generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_path, full_model_path, use_override_settings, overwrite)
-            print(f"Processed {i+1}/{total_to_process} thumbnails")
-        except Exception as e:
-            print(f"Error generating thumbnail for {model_name}: {e}")
-    
-    print(f"\nThumbnailizer - Finished processing {total_to_process} thumbnails")
-    
     try:
-        load_json_data()
-        gallery_data = update_gallery(set_name)
-        gallery.update(value=gallery_data)
-    except Exception as e:
-        print(f"Error updating gallery: {e}")
-    
-    return f"Finished processing {total_to_process} thumbnails"
+        print(f"--------------------------------------------------------")
+        print(f"Thumbnailizer generation initializing for preset: {set_name}")
+        print(f"Selected checkpoint targets: {len(model_paths)}")
+        print(f"Current suffix: {suffix}")
+
+        generation_set_data = build_generation_set_data(set_data, use_override_settings)
+
+        if use_override_settings:
+            override_settings = load_override_settings(override_settings_file)
+            print("Using settings override:")
+            for key, value in override_settings.items():
+                if value:
+                    print(f"  {key}: {value}")
+        else:
+            print("Not using settings override")
+
+        print("Resolved Thumbnailizer generation parameters:")
+        for key in ["prompt", "negativePrompt", "sampler", "scheduler", "steps", "width", "height", "cfgScale", "seed"]:
+            print(f"  {key}: {generation_set_data.get(key)}")
+
+        for i, model_path in enumerate(model_paths):
+            if generation_stop_event.is_set() or shared.state.interrupted or shared.state.stopping_generation:
+                print("Thumbnailizer generation stopped before next checkpoint.")
+                break
+
+            model_name = Path(model_path).name
+            full_model_path = os.path.join(ckpt_dir, model_path)
+            print(f"Thumbnailizer target {i + 1}/{len(model_paths)}: {model_path}")
+
+            try:
+                result = generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_path, full_model_path, use_override_settings, regenerate_existing)
+                if result == "generated":
+                    completed += 1
+                elif result == "skipped":
+                    skipped += 1
+                elif result == "interrupted":
+                    print("Thumbnailizer generation interrupted during current checkpoint.")
+                    break
+                else:
+                    failed += 1
+                print(f"Thumbnailizer progress: generated={completed}, skipped_existing={skipped}, failed={failed}, total_targets={len(model_paths)}")
+            except Exception as e:
+                failed += 1
+                print(f"Error generating thumbnail for {model_path}: {e}")
+
+        stopped = generation_stop_event.is_set() or shared.state.interrupted or shared.state.stopping_generation
+        status_prefix = "Stopped" if stopped else "Finished"
+        message = (
+            f"{status_prefix} preset '{set_name}': generated {completed}, "
+            f"skipped existing {skipped}, failed {failed}, targets {len(model_paths)}."
+        )
+        print(f"\nThumbnailizer - {message}")
+        return message
+    finally:
+        shared.state.end()
 
 # Generate thumbnails for specific model (called from generate_thumbnails)
-def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_path, full_model_path, use_override_settings, overwrite=False):
+def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_path, full_model_path, use_override_settings, regenerate_existing=False):
 
     # Initialize processed to None
     processed = None
@@ -478,7 +524,7 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
         else:
             print(f"Thumbnailizer: Not using override settings for model: {model_name}")
 
-        print(f"Thumbnailizer: Generation metadata for {model_name}:")
+        print(f"Thumbnailizer: Generation metadata for {model_path}:")
         for key, value in generation_set_data.items():
             print(f"  {key}: {value}")
 
@@ -499,22 +545,15 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
         if scheduler_name:
             p.scheduler = scheduler_name
 
-        # Find the full path of the model
         model_name_without_ext = model_name.rsplit('.', 1)[0]
-        model_full_path = next((path for path in relevant_model_paths if Path(path).name == model_name), None)
-
-        if model_full_path is None:
-            raise FileNotFoundError(f"Model file for {model_name} not found or is blocklisted.")
-        # Use the model's directory to save the thumbnail
-        model_directory = Path(ckpt_dir) / Path(model_full_path).parent
-        # Use the full model name (without extension) for the output filename
+        model_directory = Path(ckpt_dir) / Path(model_path).parent
         output_filename = f"{model_name_without_ext}{suffix}"
         output_path = model_directory / output_filename
 
         # Check if thumbnail already exists and skip if not overwriting
-        if not overwrite and (model_directory / f"{output_filename}.png").exists():
-            print(f"Thumbnail already exists for {model_name}, skipping...")
-            return
+        if not regenerate_existing and (model_directory / f"{output_filename}.png").exists():
+            print(f"Thumbnail already exists for {model_path}, skipping...")
+            return "skipped"
         
         # disable saving of grid
         p.do_not_save_grid = True
@@ -525,13 +564,8 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
         # set the image filename
         p.override_settings['samples_filename_pattern'] = output_filename
         print(f"Generating thumbnail for model: {model_name} at path: {full_model_path} with output: {output_path}")
-        # Perform necessary pre-processing or initialization
-        p.init(["Empty Prompt"],[-1],[-1])
-        # Print model info
-        #print (f"\n****************************************************************************\nModel:{model_name}\nRelative Path:{model_path}\nFull Path:{full_model_path}.\n****************************************************************************\n")
-        # Print set data
-        #print(f"Retrieved set data for '{current_set_name}': {set_data}\n")
-       
+        print(f"Resolved processing steps before process_images: {p.steps}")
+
         # Process the image
         with closing(p):
             if processed is None:
@@ -544,16 +578,20 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
                         processed = processing.process_images(p)
                     else:
                         raise
+        if shared.state.interrupted or shared.state.stopping_generation:
+            return "interrupted"
         # Ensure that images were generated
         if not processed or not processed.images:
             raise ValueError("No images were generated.")
         print(f"\n\nThumbnail generated and saved as {output_path}.png")
+        return "generated"
     except Exception as e:
         print(f"Error in generating thumbnail for {model_name}: {e}")
         traceback.print_exc()
+        return "failed"
 
 # Load model paths and blocklist for the dropdown
-def update_gallery(set_name):
+def update_gallery(set_name, folder_filter=ALL_CHECKPOINT_FOLDERS):
     global current_suffix, data
     suffix = ""
     for item in data["sets"]:
@@ -564,74 +602,81 @@ def update_gallery(set_name):
             break
     print(f"Thumbnailizer: Switched to set: {set_name} ({suffix})")
     current_suffix = suffix
-    thumbnails = get_relevant_thumbnails(suffix)
-    
+    thumbnails = get_relevant_thumbnails(suffix, get_visible_model_paths(folder_filter))
+
     return [(path, name) for path, name in thumbnails]
 
 # Functionality to generate thumbnails for all sets
-def generate_thumbnails_for_all_sets(start_index=0, end_index=-1, overwrite=False, use_override_settings=False):
+def generate_thumbnails_for_all_sets(model_paths, regenerate_existing=False, use_override_settings=False):
     global data, current_set_name, set_data
-    
-    all_sets = data["sets"]
-    model_paths = relevant_model_paths[start_index:end_index] if end_index != -1 else relevant_model_paths[start_index:]
-    
-    for model_path in model_paths:
-        # model_name = Path(model_path).name.rsplit('.', 1)[0]  # Get full name without extension
-        model_name = Path(model_path).name
-        
-        for set_item in all_sets:
-            set_name = set_item["displayName"]
-            suffix = f".{set_item['suffix']}" if set_item['suffix'] else ''
-            
-            current_set_name = set_name
-            set_data = set_item
-            
-            print(f"Generating thumbnail for set: {set_name} with suffix: {suffix}")
-            generate_thumbnail_for_model_and_set(model_name, model_path, set_item, suffix, overwrite, use_override_settings)
-    # Update the gallery with all thumbnails
-    all_thumbnails = []
-    for set_item in all_sets:
-        suffix = f".{set_item['suffix']}" if set_item['suffix'] else ''
-        all_thumbnails.extend(get_relevant_thumbnails(suffix))
-    
-    gallery.update(all_thumbnails)
-    
-    print("Finished generating thumbnails for all sets.")
-    return "Finished generating thumbnails for all sets."
 
-def generate_thumbnail_for_model_and_set(model_name, model_path, set_item, suffix, overwrite, use_override_settings):
-    generation_set_data = build_generation_set_data(set_item, use_override_settings)
-    
-    # Use the full model name without extension for the thumbnail
-    model_name_without_ext = model_name.rsplit('.', 1)[0]
-    thumbnail_file_name = f"{model_name_without_ext}{suffix}.png"
-    thumbnail_path = Path(ckpt_dir) / Path(model_path).parent / thumbnail_file_name
-    
-    print(f"Checking if thumbnail exists: {thumbnail_path}")
-    
-    if not overwrite and thumbnail_path.exists():
-        print(f"Thumbnail already exists for {model_name} in set {set_item['displayName']}, skipping...")
-        return
-    
+    model_paths = normalize_model_paths(model_paths)
+    if not model_paths:
+        return "No checkpoint targets selected."
+
+    generation_stop_event.clear()
+    shared.state.begin(job="thumbnailizer-all-presets")
+    original_set_name = current_set_name
+    original_set_data = set_data
+    completed = 0
+    skipped = 0
+    failed = 0
+    total_targets = len(model_paths) * len(data["sets"])
+
     try:
-        print(f"Generating thumbnail for model: {model_name} in set: {set_item['displayName']}")
-        
-        # Debug prints for model paths and names
-        print(f"Model name with extension: {model_name}")
-        print(f"Model path: {model_path}")
-        
-        # Find the full path of the model by matching the full model name including the extension
-        model_full_path = next((path for path in relevant_model_paths if Path(path).name == model_name), None)
-        
+        for model_path in model_paths:
+            model_name = Path(model_path).name
 
-        print(f"Found model full path: {model_full_path}")
-        
-        if model_full_path is None:
-            raise FileNotFoundError(f"Model file for {model_name} not found or is blocklisted.")
-        
-        generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_path, os.path.join(ckpt_dir, model_full_path), use_override_settings)
-    except Exception as e:
-        print(f"Error generating thumbnail for {model_name} in set {set_item['displayName']}: {e}")
+            for set_item in data["sets"]:
+                if generation_stop_event.is_set() or shared.state.interrupted or shared.state.stopping_generation:
+                    print("Thumbnailizer all-preset generation stopped before next target.")
+                    break
+
+                set_name = set_item["displayName"]
+                suffix = f".{set_item['suffix']}" if set_item['suffix'] else ''
+                current_set_name = set_name
+                set_data = set_item
+                generation_set_data = build_generation_set_data(set_item, use_override_settings)
+
+                print(f"Generating thumbnail for preset: {set_name}; checkpoint: {model_path}; suffix: {suffix}")
+                print("Resolved Thumbnailizer generation parameters:")
+                for key in ["sampler", "scheduler", "steps", "width", "height", "cfgScale", "seed"]:
+                    print(f"  {key}: {generation_set_data.get(key)}")
+
+                result = generate_thumbnail_for_model(
+                    generation_set_data,
+                    model_name,
+                    suffix,
+                    model_path,
+                    os.path.join(ckpt_dir, model_path),
+                    use_override_settings,
+                    regenerate_existing,
+                )
+                if result == "generated":
+                    completed += 1
+                elif result == "skipped":
+                    skipped += 1
+                elif result == "interrupted":
+                    print("Thumbnailizer all-preset generation interrupted during current target.")
+                    break
+                else:
+                    failed += 1
+
+            if generation_stop_event.is_set() or shared.state.interrupted or shared.state.stopping_generation:
+                break
+
+        stopped = generation_stop_event.is_set() or shared.state.interrupted or shared.state.stopping_generation
+        status_prefix = "Stopped" if stopped else "Finished"
+        message = (
+            f"{status_prefix} all presets: generated {completed}, "
+            f"skipped existing {skipped}, failed {failed}, targets {total_targets}."
+        )
+        print(f"Thumbnailizer - {message}")
+        return message
+    finally:
+        current_set_name = original_set_name
+        set_data = original_set_data
+        shared.state.end()
 
     
 # Thumbnailizer UI
@@ -745,7 +790,29 @@ def on_ui_tabs():
                     duplicate_preset_button = gr.Button("Duplicate Preset")
                     reload_presets_button = gr.Button("Reload Presets")
                 with gr.Row():
-                    generate_button = gr.Button("Generate with Selected Preset")
+                    folder_filter_dropdown = gr.Dropdown(
+                        label="Checkpoint Folder",
+                        choices=get_checkpoint_folder_choices(),
+                        value=ALL_CHECKPOINT_FOLDERS,
+                    )
+                with gr.Row():
+                    checkpoint_targets = gr.Dropdown(
+                        label="Checkpoint Targets (relative paths)",
+                        choices=get_visible_model_paths(ALL_CHECKPOINT_FOLDERS),
+                        value=get_missing_model_paths(get_suffix_for_set_name(initial_set_name), get_visible_model_paths(ALL_CHECKPOINT_FOLDERS)),
+                        multiselect=True,
+                    )
+                with gr.Row():
+                    select_missing_button = gr.Button("Select Missing")
+                    select_visible_button = gr.Button("Select Visible")
+                    clear_targets_button = gr.Button("Clear")
+                    refresh_gallery_button = gr.Button("Refresh Gallery")
+                with gr.Row():
+                    regenerate_existing_checkbox = gr.Checkbox(label="Regenerate thumbnails that already exist", value=False)
+                    use_override_settings_checkbox = gr.Checkbox(label="Use Override Settings (edit override_settings_user.txt)", value=False)
+                    stop_generation_button = gr.Button("Stop Thumbnailizer Generation")
+                with gr.Row():
+                    generate_button = gr.Button("Generate Selected Preset for Selected Checkpoints")
                 with gr.Row():
                     preset_message = gr.Markdown()
 
@@ -768,67 +835,97 @@ def on_ui_tabs():
             ]
             preset_editor_outputs = preset_editor_inputs + [determinism_warning]
 
-        ######################## GENERATE SECTION ########################
+        ######################## BATCH GENERATE SECTION ########################
         with GradioBox(elem_classes="ch_box"):
             with gr.Row():
-                generation_scope = gr.Radio(
-                    choices=[GENERATION_SCOPE_ALL_VISIBLE, GENERATION_SCOPE_ADVANCED_RANGE],
-                    value=GENERATION_SCOPE_ALL_VISIBLE,
-                    label="Generation Scope",
-                    info="Default generation uses the full visible checkpoint list. Open the advanced range only for debugging or library slicing.",
-                )
-                overwrite_checkbox = gr.Checkbox(label="Overwrite Existing Thumbnails", value=False)
-                use_override_settings_checkbox = gr.Checkbox(label="Use Override Settings (edit override_settings_user.txt)", value=False)
-            with gr.Accordion("Advanced generation range", open=False):
                 gr.Markdown(
-                    "Advanced: generate only checkpoints from position N through M in the currently filtered list."
+                    "Batch action: generates every saved preset for the selected checkpoint targets above."
                 )
-                with gr.Row():
-                    start_index_input = gr.Number(label="Start Index", value=0)
-                    last_index_input = gr.Number(label="Last Index (-1 = last index)", value=-1)
             with gr.Row():
-                generate_all_button = gr.Button("Generate Thumbnails for All Sets")
+                generate_all_button = gr.Button("Generate All Presets for Selected Checkpoints")
             with gr.Row():
                 generating_message = gr.Markdown()
 
-            def display_generating_message(set_name, overwrite, generation_scope, start_index, end_index, use_override_settings):
-                start_index, end_index = resolve_generation_range(generation_scope, start_index, end_index)
-
-                # Get the current set data
-                current_set_data = get_set_data(set_name)
-                current_suffix = f".{current_set_data['suffix']}" if current_set_data['suffix'] else ''
-
-                thread = threading.Thread(target=generate_thumbnails, args=(set_name, current_set_data, current_suffix, overwrite, start_index, end_index, use_override_settings))
-                thread.start()
-                scope_text = "advanced range" if generation_scope == GENERATION_SCOPE_ADVANCED_RANGE else "visible checkpoints"
-                return f"Generating thumbnails for set: {set_name} using {scope_text}. See console for progress. Once generated, restart A1111 or switch set back and forth to reload."
-
-            def display_generating_all_message(overwrite, generation_scope, start_index, end_index, use_override_settings):
-                start_index, end_index = resolve_generation_range(generation_scope, start_index, end_index)
-
-                thread = threading.Thread(target=generate_thumbnails_for_all_sets, args=(start_index, end_index, overwrite, use_override_settings))
-                thread.start()
-                scope_text = "advanced range" if generation_scope == GENERATION_SCOPE_ADVANCED_RANGE else "visible checkpoints"
-                return f"Generating thumbnails for all sets using {scope_text}. See console for progress. Once generated, restart A1111 or switch set back and forth to reload."
-
-            # Generate button action
-            generate_button.click(
-                fn=display_generating_message,
-                inputs=[set_dropdown, overwrite_checkbox, generation_scope, start_index_input, last_index_input, use_override_settings_checkbox],
-                outputs=[generating_message]
-            )
-
-            generate_all_button.click(
-                fn=display_generating_all_message,
-                inputs=[overwrite_checkbox, generation_scope, start_index_input, last_index_input, use_override_settings_checkbox],
-                outputs=[generating_message]
-            )
-
         ######################## GALLERY SECTION ########################
         with GradioBox(elem_classes="ch_box"):
-            # Gallery    
+            # Gallery
             with gr.Row():
                 gallery = gr.Gallery(value=get_relevant_thumbnails(current_suffix), columns=thumbnail_columns, height=gallery_height, object_fit=gallery_fit)
+
+        def select_missing_targets(set_name, folder_filter):
+            return get_checkpoint_target_update(set_name, folder_filter)
+
+        def select_visible_targets(folder_filter):
+            visible_paths = get_visible_model_paths(folder_filter)
+            return gr.update(choices=visible_paths, value=visible_paths)
+
+        def clear_checkpoint_targets(folder_filter):
+            return gr.update(choices=get_visible_model_paths(folder_filter), value=[])
+
+        def refresh_generation_gallery(set_name, folder_filter, selected_model_paths):
+            return update_gallery(set_name, folder_filter), get_checkpoint_target_update(set_name, folder_filter, selected_model_paths)
+
+        def stop_thumbnailizer_generation():
+            generation_stop_event.set()
+            shared.state.interrupt()
+            return "Stop requested. Thumbnailizer will stop the current image and will not continue to the next checkpoint target."
+
+        def display_generating_message(set_name, display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix, selected_model_paths, folder_filter, regenerate_existing, use_override_settings):
+            current_set_data = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
+            current_suffix = f".{current_set_data['suffix']}" if current_set_data['suffix'] else ''
+            message = generate_thumbnails(current_set_data["displayName"], current_set_data, current_suffix, selected_model_paths, regenerate_existing, use_override_settings)
+            return message, update_gallery(set_name, folder_filter), get_checkpoint_target_update(set_name, folder_filter)
+
+        def display_generating_all_message(set_name, selected_model_paths, folder_filter, regenerate_existing, use_override_settings):
+            message = generate_thumbnails_for_all_sets(selected_model_paths, regenerate_existing, use_override_settings)
+            return message, update_gallery(set_name, folder_filter), get_checkpoint_target_update(set_name, folder_filter)
+
+        folder_filter_dropdown.change(
+            fn=refresh_generation_gallery,
+            inputs=[set_dropdown, folder_filter_dropdown, checkpoint_targets],
+            outputs=[gallery, checkpoint_targets]
+        )
+
+        select_missing_button.click(
+            fn=select_missing_targets,
+            inputs=[set_dropdown, folder_filter_dropdown],
+            outputs=[checkpoint_targets]
+        )
+
+        select_visible_button.click(
+            fn=select_visible_targets,
+            inputs=[folder_filter_dropdown],
+            outputs=[checkpoint_targets]
+        )
+
+        clear_targets_button.click(
+            fn=clear_checkpoint_targets,
+            inputs=[folder_filter_dropdown],
+            outputs=[checkpoint_targets]
+        )
+
+        refresh_gallery_button.click(
+            fn=refresh_generation_gallery,
+            inputs=[set_dropdown, folder_filter_dropdown, checkpoint_targets],
+            outputs=[gallery, checkpoint_targets]
+        )
+
+        stop_generation_button.click(
+            fn=stop_thumbnailizer_generation,
+            outputs=[generating_message]
+        )
+
+        generate_button.click(
+            fn=display_generating_message,
+            inputs=[set_dropdown] + preset_editor_inputs + [checkpoint_targets, folder_filter_dropdown, regenerate_existing_checkbox, use_override_settings_checkbox],
+            outputs=[generating_message, gallery, checkpoint_targets]
+        )
+
+        generate_all_button.click(
+            fn=display_generating_all_message,
+            inputs=[set_dropdown, checkpoint_targets, folder_filter_dropdown, regenerate_existing_checkbox, use_override_settings_checkbox],
+            outputs=[generating_message, gallery, checkpoint_targets]
+        )
 
         ######################## BLOCKLIST SECTION ########################
         with GradioBox(elem_classes="ch_box"):
@@ -859,17 +956,19 @@ def on_ui_tabs():
                 # Reload JSON data
                 load_json_data()
                 
-                # Update the gallery
-                gallery_data = update_gallery(current_set_name)
-                
                 message = f"Blocklist updated: {model_blocklist_file_path}"
-                return message, gallery_data
+                return (
+                    message,
+                    update_gallery(current_set_name, ALL_CHECKPOINT_FOLDERS),
+                    gr.update(choices=get_checkpoint_folder_choices(), value=ALL_CHECKPOINT_FOLDERS),
+                    get_checkpoint_target_update(current_set_name, ALL_CHECKPOINT_FOLDERS),
+                )
 
             # Update the save blocklist button click event
             save_selection_button.click(
                 fn=save_model_blocklist_and_update_message,
                 inputs=[model_list_dropdown],
-                outputs=[blocklist_message, gallery]
+                outputs=[blocklist_message, gallery, folder_filter_dropdown, checkpoint_targets]
             )
                     
         ######################## BLOCKED PATHS SECTION ########################
@@ -898,44 +997,48 @@ def on_ui_tabs():
             # Re-initialize model data after updating blocked paths
             initialize_model_data()
             
-            # Update the gallery after changing blocked paths
-            gallery_data = update_gallery(current_set_name)
-            return "Blocked paths updated successfully!", gallery_data
+            return (
+                "Blocked paths updated successfully!",
+                update_gallery(current_set_name, ALL_CHECKPOINT_FOLDERS),
+                gr.update(choices=get_checkpoint_folder_choices(), value=ALL_CHECKPOINT_FOLDERS),
+                get_checkpoint_target_update(current_set_name, ALL_CHECKPOINT_FOLDERS),
+            )
 
         # Update blocked paths button
         update_blocked_paths_button.click(
             fn=update_blocked_paths,
             inputs=blocked_paths_checkboxes,
-            outputs=[blocked_paths_message, gallery]
+            outputs=[blocked_paths_message, gallery, folder_filter_dropdown, checkpoint_targets]
         )
         
         ######################## MISC ########################
-        def refresh_preset_view(selected_set_name, message):
+        def refresh_preset_view(selected_set_name, message, folder_filter=ALL_CHECKPOINT_FOLDERS):
             choices = get_set_choices()
             selected = selected_set_name if selected_set_name in choices else choices[0]
-            gallery_data = update_gallery(selected)
-            return [gr.update(choices=choices, value=selected), message, gallery_data] + get_preset_editor_values(selected)
+            gallery_data = update_gallery(selected, folder_filter)
+            target_update = get_checkpoint_target_update(selected, folder_filter)
+            return [gr.update(choices=choices, value=selected), message, gallery_data, target_update] + get_preset_editor_values(selected)
 
-        def save_selected_preset(selected_set_name, display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
+        def save_selected_preset(selected_set_name, display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix, folder_filter):
             global current_set_name, set_data, current_suffix, data
             new_preset = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
             selected_index = next((index for index, item in enumerate(data["sets"]) if item["displayName"] == selected_set_name), None)
 
             if selected_index is None:
-                return refresh_preset_view(selected_set_name, f"Preset not found: {selected_set_name}")
+                return refresh_preset_view(selected_set_name, f"Preset not found: {selected_set_name}", folder_filter)
 
             existing_names = {item["displayName"] for index, item in enumerate(data["sets"]) if index != selected_index}
             if new_preset["displayName"] in existing_names:
-                return refresh_preset_view(selected_set_name, f"Preset name already exists: {new_preset['displayName']}")
+                return refresh_preset_view(selected_set_name, f"Preset name already exists: {new_preset['displayName']}", folder_filter)
 
             data["sets"][selected_index] = new_preset
             save_json_data()
             current_set_name = new_preset["displayName"]
             set_data = new_preset
             current_suffix = f".{new_preset['suffix']}" if new_preset["suffix"] else ''
-            return refresh_preset_view(current_set_name, f"Saved preset to {user_sets_file_path}")
+            return refresh_preset_view(current_set_name, f"Saved preset to {user_sets_file_path}", folder_filter)
 
-        def duplicate_selected_preset(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
+        def duplicate_selected_preset(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix, folder_filter):
             global current_set_name, set_data, current_suffix, data
             copied_preset = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
             copied_preset["displayName"] = unique_name(f"{copied_preset['displayName']} Copy")
@@ -945,15 +1048,15 @@ def on_ui_tabs():
             current_set_name = copied_preset["displayName"]
             set_data = copied_preset
             current_suffix = f".{copied_preset['suffix']}" if copied_preset["suffix"] else ''
-            return refresh_preset_view(current_set_name, f"Duplicated preset to {user_sets_file_path}")
+            return refresh_preset_view(current_set_name, f"Duplicated preset to {user_sets_file_path}", folder_filter)
 
-        def reload_presets(selected_set_name):
+        def reload_presets(selected_set_name, folder_filter):
             global data
             load_json_data()
-            return refresh_preset_view(selected_set_name, f"Reloaded presets from {user_sets_file_path}")
+            return refresh_preset_view(selected_set_name, f"Reloaded presets from {user_sets_file_path}", folder_filter)
 
         # Handle set changes
-        def on_set_change(set_name):
+        def on_set_change(set_name, folder_filter):
             global current_set_name, set_data, current_suffix
             current_set_name = set_name
             set_data = get_set_data(current_set_name)
@@ -963,8 +1066,9 @@ def on_ui_tabs():
             initialize(current_set_name)
 
             # Update the gallery
-            gallery_data = update_gallery(set_name)
-            return [gallery_data] + get_preset_editor_values(set_name)
+            gallery_data = update_gallery(set_name, folder_filter)
+            target_update = get_checkpoint_target_update(set_name, folder_filter)
+            return [gallery_data, target_update] + get_preset_editor_values(set_name)
 
         for editor_input in preset_editor_inputs:
             editor_input.change(
@@ -975,27 +1079,27 @@ def on_ui_tabs():
 
         save_preset_button.click(
             fn=save_selected_preset,
-            inputs=[set_dropdown] + preset_editor_inputs,
-            outputs=[set_dropdown, preset_message, gallery] + preset_editor_outputs
+            inputs=[set_dropdown] + preset_editor_inputs + [folder_filter_dropdown],
+            outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
         )
 
         duplicate_preset_button.click(
             fn=duplicate_selected_preset,
-            inputs=preset_editor_inputs,
-            outputs=[set_dropdown, preset_message, gallery] + preset_editor_outputs
+            inputs=preset_editor_inputs + [folder_filter_dropdown],
+            outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
         )
 
         reload_presets_button.click(
             fn=reload_presets,
-            inputs=[set_dropdown],
-            outputs=[set_dropdown, preset_message, gallery] + preset_editor_outputs
+            inputs=[set_dropdown, folder_filter_dropdown],
+            outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
         )
 
         # Event handling for the Set List dropdown change
         set_dropdown.change(
             fn=on_set_change,
-            inputs=[set_dropdown],
-            outputs=[gallery] + preset_editor_outputs
+            inputs=[set_dropdown, folder_filter_dropdown],
+            outputs=[gallery, checkpoint_targets] + preset_editor_outputs
         )
 
     return [(ui_component, "Thumbnailizer", "thumbnailizer_tab")]
