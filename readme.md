@@ -31,7 +31,7 @@ You can still edit `scripts/sets_user.json` manually if you need to audit or rep
 
 `Display Name` is the human-readable name shown in the Set List. It does not control the output filename.
 
-`Thumbnail Filename Suffix` is the thumbnail variant key. Thumbnailizer writes files beside each checkpoint, so an empty suffix targets the default thumbnail name such as `model.png`, while `environment` targets `model.environment.png`. Use a short unique suffix for every non-default preset. It does not have to match the display name, though matching it as a lowercase slug can make the files easier to audit.
+`Thumbnail Filename Suffix` is the thumbnail variant key. Thumbnailizer-generated presets must use a non-empty suffix so they write sidecar files such as `model.environment.png`. The built-in `Default` empty-suffix set represents checkpoint default thumbnails such as `model.png`, but it is protected from generation to avoid overwriting primary checkpoint images.
 
 `Prompt Prefix`, `Prompt`, and `Prompt Suffix` are saved as separate static fields but are combined at generation time as `Prompt Prefix + Prompt + Prompt Suffix`. The negative prompt fields work the same way. Prefix/suffix fields are useful when you want to reuse a broad wrapper, such as model trigger words, quality tags, camera/style endings, or default negative terms, without burying that wrapper inside every main prompt. They live behind the advanced prompt affix expander in the UI by default.
 
@@ -43,6 +43,8 @@ These fields are not dynamic variables yet. Explicit wildcard expansion and rich
 ## Thumbnail Set Generation
 Batch generate thumbnails for explicitly selected checkpoint targets based on the selected preset. The target selector lists relative checkpoint paths so duplicate model filenames in different folders stay distinguishable.
 
+The selected preset must have a non-empty thumbnail filename suffix. `Default` and `Preview` can be selected for viewing, but Thumbnailizer does not generate them from the normal preset controls.
+
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/40930bd2-6232-4e4e-803e-0b1f268731df)
 
 _Use Select Missing to target only checkpoints without thumbnails for the selected preset. Use Select Visible to target every checkpoint in the current folder filter. Enable "Regenerate thumbnails that already exist" only when existing files should be replaced._
@@ -50,7 +52,7 @@ _Use Select Missing to target only checkpoints without thumbnails for the select
 ## Generate for All Sets
 ![image](https://github.com/user-attachments/assets/79e3b0dc-245b-47a7-81cb-ef941f488be2)
 
-_Use this button to generate every saved preset for the currently selected checkpoint targets. Select the targets first; the batch action does not silently expand to the whole checkpoint library._
+_Use this button to generate every saved preset with a non-empty suffix for the currently selected checkpoint targets. Select the targets first; the batch action does not silently expand to the whole checkpoint library and skips protected/display-only built-ins._
 
 ## Use Override Settings
 ![image](https://github.com/user-attachments/assets/6970f0f7-28be-41d9-8315-5028d7915fb9)

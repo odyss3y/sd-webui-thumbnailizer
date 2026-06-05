@@ -17,12 +17,12 @@ if script_dir not in sys.path:
 
 # Third party libraries, may need to be installed manually
 import gradio as gr
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 GradioBox = getattr(gr, "Box", gr.Group)
 
 # Automatic1111 specific imports
-from modules import script_callbacks, shared, sd_models, processing, images, sd_samplers
+from modules import script_callbacks, shared, sd_models, processing, sd_samplers
 
 try:
     from modules import sd_schedulers
@@ -102,6 +102,11 @@ DELETE_PROTECTED_PRESET_NOTICE = (
     "Default is the base `model.png` thumbnail set; Preview is the Civitai Helper `modelname.preview.png` view."
 )
 INPAINTING_FILENAME_MARKERS = ("inpaint", "inpainting")
+GENERATION_PROTECTED_PRESET_SUFFIXES = {""}
+GENERATION_PROTECTED_PRESET_NOTICE = (
+    "Default is protected from generation because it targets checkpoint default `model.png` files. "
+    "Create or duplicate a preset with a non-empty suffix before generating Thumbnailizer images."
+)
 
 # Load json data
 def load_json_data():
@@ -133,8 +138,25 @@ def is_delete_protected_preset_item(set_item):
     return display_name in DELETE_PROTECTED_PRESET_NAMES or suffix in DELETE_PROTECTED_PRESET_SUFFIXES
 
 
+def is_generation_protected_preset_item(set_item):
+    set_item = set_item or {}
+    suffix = str(set_item.get("suffix", "")).strip().lower()
+    return suffix in GENERATION_PROTECTED_PRESET_SUFFIXES
+
+
 def is_read_only_preset_name(set_name):
     return is_read_only_preset_item(get_set_data(set_name))
+
+
+def is_generation_protected_preset_name(set_name):
+    return is_generation_protected_preset_item(get_set_data(set_name))
+
+
+def has_generatable_presets():
+    return any(
+        not is_read_only_preset_item(set_item) and not is_generation_protected_preset_item(set_item)
+        for set_item in data.get("sets", [])
+    )
 
 
 def get_read_only_preset_notice(set_name):
@@ -146,12 +168,11 @@ def get_generation_target_notice(set_name):
     suffix = str(set_item.get("suffix", "")).strip()
     if is_read_only_preset_item(set_item):
         return "Preview is display-only. Thumbnailizer does not generate or modify Civitai Helper `modelname.preview.png` files."
+    if is_generation_protected_preset_item(set_item):
+        return GENERATION_PROTECTED_PRESET_NOTICE
     if suffix:
         return f"Generation target: writes sidecar thumbnail variants named `model.{suffix}.png` beside selected checkpoints."
-    return (
-        "Generation target: Default writes checkpoint default thumbnail files named `model.png` beside selected checkpoints. "
-        "Existing `model.png` files are skipped unless regeneration is enabled."
-    )
+    return "Generation target unavailable: this preset has no thumbnail filename suffix."
 
 
 def is_inpainting_model_path(model_path):
@@ -262,12 +283,13 @@ def get_preset_editor_values(set_name):
 def get_preset_action_updates(set_name):
     editable = not is_read_only_preset_name(set_name)
     deletable = not is_delete_protected_preset_item(get_set_data(set_name))
+    generatable = editable and not is_generation_protected_preset_name(set_name)
     return [
         gr.update(interactive=editable),
         gr.update(interactive=editable),
         gr.update(interactive=deletable),
-        gr.update(interactive=editable),
-        gr.update(interactive=editable),
+        gr.update(interactive=generatable),
+        gr.update(interactive=has_generatable_presets()),
     ]
 
 
@@ -371,8 +393,13 @@ def get_thumbnail_path_for_model(model_path, suffix=""):
 def save_thumbnail_image_exact(image, output_path, geninfo=None):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_name(f"{output_path.name}.tmp")
-    images.save_image_with_geninfo(image, geninfo, str(temp_path), extension=".png")
+    temp_path = output_path.with_name(f"{output_path.name}.thumbnailizer.tmp")
+    pnginfo = None
+    if geninfo is not None and getattr(shared.opts, "enable_pnginfo", True):
+        pnginfo = PngImagePlugin.PngInfo()
+        pnginfo.add_text("parameters", str(geninfo))
+
+    image.save(str(temp_path), format="PNG", pnginfo=pnginfo)
     os.replace(temp_path, output_path)
 
 
@@ -390,7 +417,9 @@ def get_suffix_for_set_name(set_name):
 def get_checkpoint_target_update(set_name, folder_filter=ALL_CHECKPOINT_FOLDERS, selected_paths=None):
     visible_paths = get_visible_model_paths(folder_filter)
     selected_paths = normalize_model_paths(selected_paths)
-    if selected_paths:
+    if is_read_only_preset_name(set_name) or is_generation_protected_preset_name(set_name):
+        selected = []
+    elif selected_paths:
         selected = [path for path in selected_paths if path in visible_paths]
     else:
         selected = get_missing_model_paths(get_suffix_for_set_name(set_name), visible_paths)
@@ -652,8 +681,6 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
         p.override_settings['save_to_dirs'] = False
         # set image output directory
         p.outpath_samples = str(model_directory)
-        # set the image filename
-        p.override_settings['samples_filename_pattern'] = output_filename
         print(f"Generating thumbnail for model: {model_name} at path: {full_model_path} with output: {output_path}")
         print(f"Resolved processing steps before process_images: {p.steps}")
 
@@ -709,10 +736,13 @@ def generate_thumbnails_for_all_sets(model_paths, regenerate_existing=False, use
     if not model_paths:
         return "No checkpoint targets selected."
 
-    generation_sets = [set_item for set_item in data["sets"] if not is_read_only_preset_item(set_item)]
-    read_only_preset_count = len(data["sets"]) - len(generation_sets)
+    generation_sets = [
+        set_item for set_item in data["sets"]
+        if not is_read_only_preset_item(set_item) and not is_generation_protected_preset_item(set_item)
+    ]
+    skipped_protected_preset_count = len(data["sets"]) - len(generation_sets)
     if not generation_sets:
-        return "No editable generation presets are available. Read-only preview presets are display-only."
+        return "No generatable presets are available. Create a preset with a non-empty thumbnail filename suffix first."
 
     generation_stop_event.clear()
     shared.state.begin(job="thumbnailizer-all-presets")
@@ -770,7 +800,7 @@ def generate_thumbnails_for_all_sets(model_paths, regenerate_existing=False, use
         message = (
             f"{status_prefix} all presets: generated {completed}, "
             f"skipped existing {skipped}, failed {failed}, targets {total_targets}, "
-            f"read-only presets skipped {read_only_preset_count}."
+            f"protected/display-only presets skipped {skipped_protected_preset_count}."
         )
         print(f"Thumbnailizer - {message}")
         return message
@@ -791,6 +821,7 @@ def on_ui_tabs():
     initial_set_name = current_set_name if current_set_name in set_choices else set_choices[0]
     initial_preset_read_only = is_read_only_preset_name(initial_set_name)
     initial_preset_delete_protected = is_delete_protected_preset_item(get_set_data(initial_set_name))
+    initial_preset_generatable = not initial_preset_read_only and not is_generation_protected_preset_name(initial_set_name)
     
     # Function to save model blocklist to a file
     def save_model_blocklist(selected_models):
@@ -926,7 +957,7 @@ def on_ui_tabs():
                     use_override_settings_checkbox = gr.Checkbox(label="Use Override Settings (edit override_settings_user.txt)", value=False)
                     stop_generation_button = gr.Button("Stop Thumbnailizer Generation")
                 with gr.Row():
-                    generate_button = gr.Button("Generate Selected Preset for Selected Checkpoints", interactive=not initial_preset_read_only)
+                    generate_button = gr.Button("Generate Selected Preset for Selected Checkpoints", interactive=initial_preset_generatable)
                 with gr.Accordion("All preset batch generation", open=False):
                     gr.Markdown(
                         "Batch action: generates every saved preset for the selected checkpoint targets above."
@@ -994,6 +1025,8 @@ def on_ui_tabs():
             current_set_data = preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix)
             if is_read_only_preset_name(set_name) or is_read_only_preset_item(current_set_data):
                 return READ_ONLY_PRESET_NOTICE, update_gallery(set_name, folder_filter), get_checkpoint_target_update(set_name, folder_filter)
+            if is_generation_protected_preset_name(set_name) or is_generation_protected_preset_item(current_set_data):
+                return GENERATION_PROTECTED_PRESET_NOTICE, update_gallery(set_name, folder_filter), get_checkpoint_target_update(set_name, folder_filter)
             current_suffix = f".{current_set_data['suffix']}" if current_set_data['suffix'] else ''
             message = generate_thumbnails(current_set_data["displayName"], current_set_data, current_suffix, selected_model_paths, regenerate_existing, use_override_settings)
             return message, update_gallery(set_name, folder_filter), get_checkpoint_target_update(set_name, folder_filter)
