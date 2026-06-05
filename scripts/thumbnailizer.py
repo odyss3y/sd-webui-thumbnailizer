@@ -174,8 +174,8 @@ def get_determinism_warnings(prompt, negative_prompt, sampler, scheduler, seed):
     return "Determinism warnings:\n- " + "\n- ".join(warnings)
 
 
-def get_preset_editor_values(set_name):
-    set_item = get_set_data(set_name) or {}
+def get_preset_editor_values_from_set_item(set_item, set_name=""):
+    set_item = set_item or {}
     return [
         set_item.get("displayName", set_name or ""),
         set_item.get("suffix", ""),
@@ -200,6 +200,10 @@ def get_preset_editor_values(set_name):
             set_item.get("seed", -1),
         ),
     ]
+
+
+def get_preset_editor_values(set_name):
+    return get_preset_editor_values_from_set_item(get_set_data(set_name), set_name)
 
 
 def preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
@@ -707,7 +711,7 @@ def on_ui_tabs():
                     gr.Markdown("**Set List**")
                 with gr.Column(scale=5, min_width=240):
                     set_dropdown = gr.Dropdown(choices=set_choices, value=initial_set_name, show_label=False)
-            with gr.Accordion("Generation Preset Editor", open=True):
+            with gr.Accordion("Generation Preset Editor", open=False):
                 gr.Markdown(
                     "Preset fields are saved as static values in `sets_user.json`. "
                     "Generation uses `Prompt Prefix + Prompt + Prompt Suffix` and "
@@ -788,6 +792,7 @@ def on_ui_tabs():
                 with gr.Row():
                     save_preset_button = gr.Button("Save Preset")
                     duplicate_preset_button = gr.Button("Duplicate Preset")
+                    delete_preset_button = gr.Button("Delete Preset")
                     reload_presets_button = gr.Button("Reload Presets")
                 with gr.Row():
                     folder_filter_dropdown = gr.Dropdown(
@@ -813,6 +818,14 @@ def on_ui_tabs():
                     stop_generation_button = gr.Button("Stop Thumbnailizer Generation")
                 with gr.Row():
                     generate_button = gr.Button("Generate Selected Preset for Selected Checkpoints")
+                with gr.Accordion("All preset batch generation", open=False):
+                    gr.Markdown(
+                        "Batch action: generates every saved preset for the selected checkpoint targets above."
+                    )
+                    with gr.Row():
+                        generate_all_button = gr.Button("Generate All Presets for Selected Checkpoints")
+                with gr.Row():
+                    generating_message = gr.Markdown()
                 with gr.Row():
                     preset_message = gr.Markdown()
 
@@ -834,17 +847,6 @@ def on_ui_tabs():
                 preset_negative_prompt_suffix,
             ]
             preset_editor_outputs = preset_editor_inputs + [determinism_warning]
-
-        ######################## BATCH GENERATE SECTION ########################
-        with GradioBox(elem_classes="ch_box"):
-            with gr.Row():
-                gr.Markdown(
-                    "Batch action: generates every saved preset for the selected checkpoint targets above."
-                )
-            with gr.Row():
-                generate_all_button = gr.Button("Generate All Presets for Selected Checkpoints")
-            with gr.Row():
-                generating_message = gr.Markdown()
 
         ######################## GALLERY SECTION ########################
         with GradioBox(elem_classes="ch_box"):
@@ -1012,12 +1014,13 @@ def on_ui_tabs():
         )
         
         ######################## MISC ########################
-        def refresh_preset_view(selected_set_name, message, folder_filter=ALL_CHECKPOINT_FOLDERS):
+        def refresh_preset_view(selected_set_name, message, folder_filter=ALL_CHECKPOINT_FOLDERS, preset_values=None):
             choices = get_set_choices()
             selected = selected_set_name if selected_set_name in choices else choices[0]
             gallery_data = update_gallery(selected, folder_filter)
             target_update = get_checkpoint_target_update(selected, folder_filter)
-            return [gr.update(choices=choices, value=selected), message, gallery_data, target_update] + get_preset_editor_values(selected)
+            values = preset_values if preset_values is not None else get_preset_editor_values(selected)
+            return [gr.update(choices=choices, value=selected), message, gallery_data, target_update] + values
 
         def save_selected_preset(selected_set_name, display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix, folder_filter):
             global current_set_name, set_data, current_suffix, data
@@ -1036,7 +1039,12 @@ def on_ui_tabs():
             current_set_name = new_preset["displayName"]
             set_data = new_preset
             current_suffix = f".{new_preset['suffix']}" if new_preset["suffix"] else ''
-            return refresh_preset_view(current_set_name, f"Saved preset to {user_sets_file_path}", folder_filter)
+            return refresh_preset_view(
+                current_set_name,
+                f"Saved preset to {user_sets_file_path}",
+                folder_filter,
+                get_preset_editor_values_from_set_item(new_preset, current_set_name),
+            )
 
         def duplicate_selected_preset(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix, folder_filter):
             global current_set_name, set_data, current_suffix, data
@@ -1048,7 +1056,35 @@ def on_ui_tabs():
             current_set_name = copied_preset["displayName"]
             set_data = copied_preset
             current_suffix = f".{copied_preset['suffix']}" if copied_preset["suffix"] else ''
-            return refresh_preset_view(current_set_name, f"Duplicated preset to {user_sets_file_path}", folder_filter)
+            return refresh_preset_view(
+                current_set_name,
+                f"Duplicated preset to {user_sets_file_path}",
+                folder_filter,
+                get_preset_editor_values_from_set_item(copied_preset, current_set_name),
+            )
+
+        def delete_selected_preset(selected_set_name, folder_filter):
+            global current_set_name, set_data, current_suffix, data
+            if len(data["sets"]) <= 1:
+                return refresh_preset_view(selected_set_name, "Cannot delete the last remaining preset.", folder_filter)
+
+            selected_index = next((index for index, item in enumerate(data["sets"]) if item["displayName"] == selected_set_name), None)
+            if selected_index is None:
+                return refresh_preset_view(selected_set_name, f"Preset not found: {selected_set_name}", folder_filter)
+
+            deleted_preset = data["sets"].pop(selected_index)
+            next_index = min(selected_index, len(data["sets"]) - 1)
+            next_preset = data["sets"][next_index]
+            save_json_data()
+            current_set_name = next_preset["displayName"]
+            set_data = next_preset
+            current_suffix = f".{next_preset['suffix']}" if next_preset["suffix"] else ''
+            return refresh_preset_view(
+                current_set_name,
+                f"Deleted preset '{deleted_preset['displayName']}' from {user_sets_file_path}",
+                folder_filter,
+                get_preset_editor_values_from_set_item(next_preset, current_set_name),
+            )
 
         def reload_presets(selected_set_name, folder_filter):
             global data
@@ -1086,6 +1122,12 @@ def on_ui_tabs():
         duplicate_preset_button.click(
             fn=duplicate_selected_preset,
             inputs=preset_editor_inputs + [folder_filter_dropdown],
+            outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
+        )
+
+        delete_preset_button.click(
+            fn=delete_selected_preset,
+            inputs=[set_dropdown, folder_filter_dropdown],
             outputs=[set_dropdown, preset_message, gallery, checkpoint_targets] + preset_editor_outputs
         )
 
