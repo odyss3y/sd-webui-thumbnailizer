@@ -101,6 +101,7 @@ DELETE_PROTECTED_PRESET_NOTICE = (
     "Default and Preview are protected built-in sets. "
     "Default is the base `model.png` thumbnail set; Preview is the Civitai Helper `modelname.preview.png` view."
 )
+INPAINTING_FILENAME_MARKERS = ("inpaint", "inpainting")
 
 # Load json data
 def load_json_data():
@@ -138,6 +139,24 @@ def is_read_only_preset_name(set_name):
 
 def get_read_only_preset_notice(set_name):
     return READ_ONLY_PRESET_NOTICE if is_read_only_preset_name(set_name) else ""
+
+
+def get_generation_target_notice(set_name):
+    set_item = get_set_data(set_name) or {}
+    suffix = str(set_item.get("suffix", "")).strip()
+    if is_read_only_preset_item(set_item):
+        return "Preview is display-only. Thumbnailizer does not generate or modify Civitai Helper `modelname.preview.png` files."
+    if suffix:
+        return f"Generation target: writes sidecar thumbnail variants named `model.{suffix}.png` beside selected checkpoints."
+    return (
+        "Generation target: Default writes checkpoint default thumbnail files named `model.png` beside selected checkpoints. "
+        "Existing `model.png` files are skipped unless regeneration is enabled."
+    )
+
+
+def is_inpainting_model_path(model_path):
+    filename = Path(model_path).name.lower()
+    return any(marker in filename for marker in INPAINTING_FILENAME_MARKERS)
 
 
 def get_sampler_choices():
@@ -256,7 +275,11 @@ def get_preset_editor_updates(set_name, preset_values=None):
     values = preset_values if preset_values is not None else get_preset_editor_values(set_name)
     interactive = not is_read_only_preset_name(set_name)
     editor_updates = [gr.update(value=value, interactive=interactive) for value in values[:-1]]
-    return editor_updates + [values[-1], get_read_only_preset_notice(set_name)] + get_preset_action_updates(set_name)
+    return editor_updates + [
+        values[-1],
+        get_read_only_preset_notice(set_name),
+        get_generation_target_notice(set_name),
+    ] + get_preset_action_updates(set_name)
 
 
 def preset_from_editor_values(display_name, suffix, prompt, negative_prompt, sampler, scheduler, steps, width, height, cfg_scale, seed, prompt_prefix, prompt_suffix, negative_prompt_prefix, negative_prompt_suffix):
@@ -343,6 +366,14 @@ def get_thumbnail_path_for_model(model_path, suffix=""):
     model_path_obj = Path(model_path)
     thumb_file = f"{model_path_obj.stem}{suffix}.png"
     return Path(ckpt_dir) / model_path_obj.parent / thumb_file
+
+
+def save_thumbnail_image_exact(image, output_path, geninfo=None):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(f"{output_path.name}.tmp")
+    images.save_image_with_geninfo(image, geninfo, str(temp_path), extension=".png")
+    os.replace(temp_path, output_path)
 
 
 def get_missing_model_paths(suffix="", model_paths=None):
@@ -451,7 +482,9 @@ def initialize_model_data():
                     is_blocked = False
                     break
 
-            if rel_path not in blocklist and not is_blocked:
+            if is_inpainting_model_path(rel_path):
+                print(f"Thumbnailizer: Excluding inpainting checkpoint by filename: {rel_path}")
+            elif rel_path not in blocklist and not is_blocked:
                 relevant_model_names.append(Path(rel_path).name)
                 relevant_model_paths.append(rel_path)
 
@@ -605,13 +638,14 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
         model_name_without_ext = model_name.rsplit('.', 1)[0]
         model_directory = Path(ckpt_dir) / Path(model_path).parent
         output_filename = f"{model_name_without_ext}{suffix}"
-        output_path = model_directory / output_filename
+        output_path = model_directory / f"{output_filename}.png"
 
         # Check if thumbnail already exists and skip if not overwriting
-        if not regenerate_existing and (model_directory / f"{output_filename}.png").exists():
+        if not regenerate_existing and output_path.exists():
             print(f"Thumbnail already exists for {model_path}, skipping...")
             return "skipped"
-        
+
+        p.do_not_save_samples = True
         # disable saving of grid
         p.do_not_save_grid = True
         # disable saving image to subdirectories
@@ -640,7 +674,11 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
         # Ensure that images were generated
         if not processed or not processed.images:
             raise ValueError("No images were generated.")
-        print(f"\n\nThumbnail generated and saved as {output_path}.png")
+        geninfo = processed.infotexts[0] if getattr(processed, "infotexts", None) else None
+        save_thumbnail_image_exact(processed.images[0], output_path, geninfo)
+        if not output_path.exists():
+            raise FileNotFoundError(f"Expected thumbnail was not written: {output_path}")
+        print(f"\n\nThumbnail generated and saved as {output_path}")
         return "generated"
     except Exception as e:
         print(f"Error in generating thumbnail for {model_name}: {e}")
@@ -789,6 +827,7 @@ def on_ui_tabs():
                     )
                 )
                 read_only_preset_message = gr.Markdown(get_read_only_preset_notice(initial_set_name))
+                generation_target_message = gr.Markdown(get_generation_target_notice(initial_set_name))
                 with gr.Row():
                     preset_display_name = gr.Textbox(
                         label="Display Name",
@@ -919,6 +958,7 @@ def on_ui_tabs():
             preset_editor_outputs = preset_editor_inputs + [
                 determinism_warning,
                 read_only_preset_message,
+                generation_target_message,
                 save_preset_button,
                 duplicate_preset_button,
                 delete_preset_button,
