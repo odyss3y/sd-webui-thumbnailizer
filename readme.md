@@ -71,6 +71,7 @@ _You can select entire folders that should be ignored by the tool. Useful if you
 
 ## Supports Civitai Helper Thumbnails
 If you are already using the [Civitai Helper-extension](https://github.com/zixaphir/Stable-Diffusion-Webui-Civitai-Helper/) (forked from [this one](https://github.com/butaixianran/Stable-Diffusion-Webui-Civitai-Helper)), to download thumbnails and model info, their thumbnails are saved as modelname.preview.png. This is added to the set-list as one of the types, so you can easily switch to the original model thumbnails to view them, even if you are customizing your own sets.
+The Preview set is display-only in Thumbnailizer: it shows those Civitai Helper files but cannot be edited, deleted, duplicated, or used as a generation preset.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/5732cc16-972f-4259-b875-d47da4f190c5)
 
