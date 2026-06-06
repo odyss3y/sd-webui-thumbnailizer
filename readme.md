@@ -21,22 +21,40 @@ Switch between different sets of thumbnails for your checkpoints. Compare how al
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/20cf66b0-b2d1-4d8f-805c-268b25cc6df2)
 
 ## Customizable Sets
-Easily edit the set list in a .JSON-file format to customize the Set dropdown menu.
+Edit thumbnail generation presets directly in the Thumbnailizer tab, including prompt, negative prompt, sampler, scheduler when available, steps, size, CFG, seed, and advanced prompt affix fields.
+
+Preset edits are saved to `scripts/sets_user.json`. The bundled `scripts/sets_template.json` is only used as the first-run seed file and is not rewritten by the editor.
+
+You can still edit `scripts/sets_user.json` manually if you need to audit or repair the persisted preset data.
+
+### Preset field meanings
+
+`Display Name` is the human-readable name shown in the Set List. For normal editable presets, Thumbnailizer derives the output filename suffix from this name.
+
+`Thumbnail Filename Suffix` is read-only in the UI. Thumbnailizer-generated presets derive it from `Display Name`, so a preset named `Environment` writes sidecar files such as `model.environment.png`. The built-in `Default` set represents checkpoint default thumbnails such as `model.png`, but it is protected from generation to avoid overwriting primary checkpoint images. `Preview` remains the read-only Civitai Helper `model.preview.png` view.
+
+`Prompt Prefix`, `Prompt`, and `Prompt Suffix` are saved as separate static fields but are combined at generation time as `Prompt Prefix + Prompt + Prompt Suffix`. The negative prompt fields work the same way. Prefix/suffix fields are useful when you want to reuse a broad wrapper, such as model trigger words, quality tags, camera/style endings, or default negative terms, without burying that wrapper inside every main prompt. They live behind the advanced prompt affix expander in the UI by default.
+
+These fields are not dynamic variables yet. Explicit wildcard expansion and richer prompt composition are tracked separately for future sd-dynamic-prompts support.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/58d3c44c-bef0-425a-80fb-860774070559)
 
 
 ## Thumbnail Set Generation
-Batch generate thumbnails for each of your models based on the set file. Generation has settings for how many images to generate, and if it's allowed to override existing thumbnails.
+Batch generate thumbnails for explicitly selected checkpoint targets based on the selected preset. The target selector lists relative checkpoint paths so duplicate model filenames in different folders stay distinguishable.
+
+The selected preset must have a non-empty thumbnail filename suffix. `Default` and `Preview` can be selected for viewing, but Thumbnailizer does not generate them from the normal preset controls.
+
+Use `New Preset` to create a fresh editable preset. Use `Duplicate Preset` when you want to copy the currently selected settings into a new preset.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/40930bd2-6232-4e4e-803e-0b1f268731df)
 
-_Set the [Last Index] to -1 to generate all missing thumbnails for a set, or check the "Overwrite" setting to re-generate all._
+_Use Select Missing to target only checkpoints without thumbnails for the selected preset. Use Select Visible to target every checkpoint in the current folder filter. Enable "Regenerate thumbnails that already exist" only when existing files should be replaced._
 
 ## Generate for All Sets
 ![image](https://github.com/user-attachments/assets/79e3b0dc-245b-47a7-81cb-ef941f488be2)
 
-_Use this button to generate thumbnails for all the possible sets from the Sets-dropdown, instead of just the currently selected one._
+_Use this button to generate every saved preset with a non-empty suffix for the currently selected checkpoint targets. Select the targets first; the batch action does not silently expand to the whole checkpoint library and skips protected/display-only built-ins._
 
 ## Use Override Settings
 ![image](https://github.com/user-attachments/assets/6970f0f7-28be-41d9-8315-5028d7915fb9)
@@ -57,6 +75,7 @@ _You can select entire folders that should be ignored by the tool. Useful if you
 
 ## Supports Civitai Helper Thumbnails
 If you are already using the [Civitai Helper-extension](https://github.com/zixaphir/Stable-Diffusion-Webui-Civitai-Helper/) (forked from [this one](https://github.com/butaixianran/Stable-Diffusion-Webui-Civitai-Helper)), to download thumbnails and model info, their thumbnails are saved as modelname.preview.png. This is added to the set-list as one of the types, so you can easily switch to the original model thumbnails to view them, even if you are customizing your own sets.
+The Preview set is display-only in Thumbnailizer: it shows those Civitai Helper files but cannot be edited, deleted, duplicated, or used as a generation preset.
 
 ![image](https://github.com/MNeMoNiCuZ/sd-webui-thumbnailizer/assets/60541708/5732cc16-972f-4259-b875-d47da4f190c5)
 
@@ -76,7 +95,7 @@ You can manually install the extension by downloading this space and placing it 
 # Known Issues
 >IndexError: list index out of range
 
-The script failed to count the number of images correctly. Make sure that your Start Index and Stop Index matches the available checkpoints.
+The script failed to count the number of images correctly. Refresh the gallery and reselect checkpoint targets so the selected relative paths match the currently visible checkpoint list.
 
 >AttributeError: 'NoneType' object has no attribute 'get'
 
