@@ -8,7 +8,7 @@ import threading
 import configparser
 import re
 from pathlib import Path
-from contextlib import closing, contextmanager
+from contextlib import closing
 import traceback
 
 # Add the current directory to Python path
@@ -110,43 +110,6 @@ GENERATION_PROTECTED_PRESET_NOTICE = (
 )
 IDENTITY_PROTECTED_PRESET_NAMES = {"default", "preview"}
 IDENTITY_PROTECTED_PRESET_SUFFIXES = {"", "preview"}
-SAVE_OPTION_KEYS = (
-    "samples_filename_pattern",
-    "directories_filename_pattern",
-    "save_to_dirs",
-    "grid_save_to_dirs",
-    "use_save_to_dirs_for_ui",
-    "outdir_samples",
-    "outdir_txt2img_samples",
-    "outdir_grids",
-    "outdir_txt2img_grids",
-    "save_images_add_number",
-    "save_images_replace_action",
-)
-
-
-@contextmanager
-def preserve_shared_save_options():
-    opts = getattr(shared, "opts", None)
-    if opts is None:
-        yield
-        return
-
-    saved_options = {}
-    for key in SAVE_OPTION_KEYS:
-        try:
-            saved_options[key] = getattr(opts, key)
-        except Exception:
-            pass
-
-    try:
-        yield
-    finally:
-        for key, value in saved_options.items():
-            try:
-                setattr(opts, key, value)
-            except Exception as restore_error:
-                print(f"Thumbnailizer warning: failed to restore shared option {key}: {restore_error}")
 
 # Load json data
 def load_json_data():
@@ -789,7 +752,8 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
             width=int(generation_set_data.get("width", 420)),
             height=int(generation_set_data.get("height", 640)),
             seed=int(generation_set_data.get("seed", -1)),
-            override_settings={"sd_model_checkpoint": model_path}
+            override_settings={"sd_model_checkpoint": model_path},
+            override_settings_restore_afterwards=True,
         )
         scheduler_name = generation_set_data.get("scheduler", None)
         if scheduler_name:
@@ -813,17 +777,16 @@ def generate_thumbnail_for_model(generation_set_data, model_name, suffix, model_
 
         # Process the image
         with closing(p):
-            with preserve_shared_save_options():
-                if processed is None:
-                    try:
+            if processed is None:
+                try:
+                    processed = processing.process_images(p)
+                except AttributeError as ae:
+                    if "'NoneType' object has no attribute 'options'" in str(ae):
+                        print(f"Warning: Sampler configuration issue for {model_name}. Trying with default sampler.")
+                        p.sampler_name = "Euler a"  # Use a default sampler
                         processed = processing.process_images(p)
-                    except AttributeError as ae:
-                        if "'NoneType' object has no attribute 'options'" in str(ae):
-                            print(f"Warning: Sampler configuration issue for {model_name}. Trying with default sampler.")
-                            p.sampler_name = "Euler a"  # Use a default sampler
-                            processed = processing.process_images(p)
-                        else:
-                            raise
+                    else:
+                        raise
         if shared.state.interrupted or shared.state.stopping_generation:
             return "interrupted"
         # Ensure that images were generated
